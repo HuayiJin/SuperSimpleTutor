@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LeetGPU 一天速通 — Triton &amp; CUDA 双轨攻克前 10 题</title>
+  <meta name="description" content="Triton 极速轨 + CUDA C++ 硬核轨双轨合一：一天吃透 LeetGPU 官方前 10 题，掌握最省力与高分提速实战写法。" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-shell" id="app-shell" data-track="triton">
+    <!-- 顶部导航栏 -->
+    <header class="topbar" role="banner">
+      <div class="topbar-left">
+        <button id="mobile-menu-btn" class="icon-btn mobile-only" aria-label="切换题目目录" aria-expanded="false">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+        </button>
+        <div class="brand" id="brand-home" role="button" tabindex="0">
+          <span class="brand-logo" id="brand-logo" aria-hidden="true">⚡</span>
+          <div class="brand-text">
+            <span class="brand-title">LeetGPU <span class="accent-emerald">一天速通</span></span>
+            <span class="brand-sub" id="brand-sub">Triton &amp; CUDA 双轨 · 前 10 题全通关</span>
+          </div>
+        </div>
+      </div>
+
+      <nav class="topbar-tabs" role="tablist" aria-label="主功能区">
+        <button class="nav-tab active" data-view="roadmap" role="tab" aria-selected="true">
+          <span class="tab-dot"></span>一天路线图
+        </button>
+        <button class="nav-tab" data-view="studio" role="tab" aria-selected="false">
+          <span class="tab-dot"></span>10 题精讲实验室
+        </button>
+        <button class="nav-tab" data-view="cheatsheet" role="tab" aria-selected="false">
+          <span class="tab-dot"></span>双轨速查表
+        </button>
+      </nav>
+
+      <div class="topbar-right">
+        <!-- 核心双轨切换器：始终可见 -->
+        <div class="track-switcher" role="group" aria-label="学习主轨切换" title="快捷键 T 随时切换 Triton / CUDA 主轨">
+          <button class="track-btn active" data-track-btn="triton">
+            <span class="track-dot track-dot-triton"></span>Triton 轨
+          </button>
+          <button class="track-btn" data-track-btn="cuda">
+            <span class="track-dot track-dot-cuda"></span>CUDA 轨
+          </button>
+        </div>
+
+        <div class="progress-cluster" aria-live="polite">
+          <div class="stat-pill" title="当前主轨已完成题数">
+            <span class="stat-label" id="stat-track-label">Triton</span>
+            <strong id="solved-count">0/10</strong>
+          </div>
+          <div class="stat-pill stat-pill-pts" title="当前主轨预估积分">
+            <span class="stat-label">积分</span>
+            <strong id="points-count">0 / 120</strong>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- 主工作区 -->
+    <div class="workspace">
+      <!-- 左侧边栏：10 题目录 -->
+      <aside class="sidebar" id="sidebar" aria-label="10 题学习目录">
+        <div class="sidebar-header">
+          <div class="sidebar-title-row">
+            <h2 id="sidebar-track-heading">Triton 10 题路线</h2>
+            <button id="sort-toggle-btn" class="mini-btn" title="在「一天冲刺顺序」与「LeetGPU 官方 #1-#10 顺序」间切换">
+              冲刺顺序 ⇅
+            </button>
+          </div>
+          <div class="progress-bar-wrap" role="progressbar" aria-valuemin="0" aria-valuemax="10" aria-valuenow="0" id="sidebar-progressbar">
+            <div class="progress-bar-fill" id="sidebar-progress-fill" style="width: 0%"></div>
+          </div>
+          <div class="sidebar-meta">
+            <span id="time-remaining">剩余预计约 3h 15m</span>
+            <button id="reset-progress-btn" class="text-btn" title="重置当前主轨进度">重置本轨</button>
+          </div>
+          <div class="dual-progress-mini" id="dual-progress-mini">
+            <span>⚡ Triton: <strong>0/10</strong></span>
+            <span>🟢 CUDA: <strong>0/10</strong></span>
+          </div>
+        </div>
+
+        <div class="problem-list" id="problem-list" role="list">
+          <!-- app.js 动态渲染 -->
+        </div>
+
+        <div class="sidebar-footer">
+          <div class="timer-widget">
+            <div class="timer-top">
+              <span class="timer-label">冲刺番茄钟</span>
+              <span class="timer-display" id="timer-display">25:00</span>
+            </div>
+            <div class="timer-controls">
+              <button class="mini-btn primary-mini" id="timer-toggle">开始</button>
+              <button class="mini-btn" id="timer-reset">重置</button>
+              <button class="mini-btn" id="timer-mode" title="切换 15 / 25 / 45 分钟">25m</button>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <!-- 主内容区 -->
+      <main class="main-content" id="main-content" tabindex="-1">
+        <!-- 视图 1：一天路线图 -->
+        <section id="view-roadmap" class="view-section active" aria-labelledby="roadmap-heading">
+        </section>
+
+        <!-- 视图 2：10 题精讲工作室 -->
+        <section id="view-studio" class="view-section" aria-labelledby="studio-heading">
+        </section>
+
+        <!-- 视图 3：双轨速查表 -->
+        <section id="view-cheatsheet" class="view-section" aria-labelledby="cheatsheet-heading">
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <!-- 轻提示 Toast -->
+  <div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true"></div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
