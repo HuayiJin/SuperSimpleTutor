@@ -428,7 +428,7 @@ function renderConv1DViz(container, problem, track) {
     }).join('');
 
     const kCells = kernel.map((kw, k) => `
-      <div class="t-cell" style="min-width:52px;background:var(--purple-soft);border-color:var(--purple-border);color:#ddd6fe">
+      <div class="t-cell" style="min-width:52px;background:var(--purple-soft);border-color:var(--purple-border);color:var(--badge-triton-text)">
         <span class="t-cell-idx">k[${k}]</span>
         <span class="t-cell-val">${kw}</span>
       </div>`).join('');

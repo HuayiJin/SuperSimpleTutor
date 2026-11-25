@@ -7,6 +7,7 @@ const LEGACY_KEY = 'leetgpu_triton_1day_v1';
 const DEFAULT_STATE = {
   view: 'roadmap',        // 'roadmap' | 'studio' | 'cheatsheet'
   track: 'triton',        // 'triton' | 'cuda'
+  theme: 'light',         // 'light' | 'dark'（默认清爽浅色主题）
   activeProblemId: 1,
   activeCodeTab: 'triton', // 'triton' | 'cuda' | 'pytorch'
   sortMode: 'sprint',     // 'sprint' | 'official'
@@ -142,6 +143,22 @@ function showToast(msg) {
   el.classList.add('show');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.classList.remove('show'), 2200);
+}
+
+/* ---------- 主题切换（默认浅色） ---------- */
+function applyTheme(themeName, silent = false) {
+  const next = themeName === 'dark' ? 'dark' : 'light';
+  state.theme = next;
+  document.documentElement.dataset.theme = next;
+  const btn = document.getElementById('theme-toggle-btn');
+  if (btn) {
+    btn.textContent = next === 'light' ? '🌙' : '☀️';
+    btn.title = next === 'light' ? '切换到深色主题' : '切换到浅色主题';
+  }
+  saveState();
+  if (!silent) {
+    showToast(next === 'light' ? '已切换至 ☀️ 浅色主题' : '已切换至 🌙 深色主题');
+  }
 }
 
 /* ---------- 主轨切换（Triton ⇄ CUDA） ---------- */
@@ -910,6 +927,11 @@ function init() {
     btn.addEventListener('click', () => setTrack(btn.dataset.trackBtn));
   });
 
+  // 主题切换按钮
+  document.getElementById('theme-toggle-btn')?.addEventListener('click', () => {
+    applyTheme(state.theme === 'light' ? 'dark' : 'light');
+  });
+
   // 侧边栏排序切换
   document.getElementById('sort-toggle-btn').addEventListener('click', () => {
     state.sortMode = state.sortMode === 'sprint' ? 'official' : 'sprint';
@@ -968,6 +990,7 @@ function init() {
   });
 
   setupTimer();
+  applyTheme(state.theme || 'light', true);
   setTrack(state.track, true);
   setView(state.view);
 }
