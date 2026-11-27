@@ -1,10 +1,12 @@
 import { PROBLEMS, SPRINTS, TRACK_META } from './data/problems.js';
 import { mountVisualizer } from './components/visualizers.js';
+import { mountLlmSim } from './modules/llm-sim.js';
 
 const STORAGE_KEY = 'leetgpu_dual_track_v2';
 const LEGACY_KEY = 'leetgpu_triton_1day_v1';
 
 const DEFAULT_STATE = {
+  module: 'leetgpu',      // 'leetgpu' | 'llm'
   view: 'roadmap',        // 'roadmap' | 'studio' | 'cheatsheet'
   track: 'triton',        // 'triton' | 'cuda'
   theme: 'light',         // 'light' | 'dark'（默认清爽浅色主题）
@@ -17,6 +19,7 @@ const DEFAULT_STATE = {
 
 let state = loadState();
 let selectedAnnotationLine = null;
+let llmMounted = false;
 
 // 冲刺番茄钟状态
 const TIMER_MODES = [15, 25, 45];
@@ -145,6 +148,63 @@ function showToast(msg) {
   toastTimer = setTimeout(() => el.classList.remove('show'), 2200);
 }
 
+/* ---------- 平台一级模块切换（LeetGPU ⇄ LLM 4D 推演台） ---------- */
+function updateLlmHeaderMetrics(metrics) {
+  const pEl = document.getElementById('llm-hdr-params');
+  const cEl = document.getElementById('llm-hdr-compute');
+  const vEl = document.getElementById('llm-hdr-vram');
+  const pill = document.getElementById('llm-hdr-vram-pill');
+  if (pEl) pEl.textContent = metrics.paramsText;
+  if (cEl) cEl.textContent = metrics.computeText;
+  if (vEl) vEl.textContent = metrics.vramText;
+  if (pill) {
+    pill.classList.toggle('is-oom', Boolean(metrics.isOOM));
+    pill.classList.toggle('is-ok', !metrics.isOOM);
+  }
+}
+
+function setModule(modName, { syncHash = true, silent = false } = {}) {
+  const next = modName === 'llm' ? 'llm' : 'leetgpu';
+  state.module = next;
+  saveState();
+
+  const shell = document.getElementById('app-shell');
+  shell.dataset.module = next;
+
+  document.querySelectorAll('[data-module-btn]').forEach((btn) => {
+    const active = btn.dataset.moduleBtn === next;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-selected', String(active));
+  });
+
+  const wsLeet = document.getElementById('workspace-leetgpu');
+  const wsLlm = document.getElementById('workspace-llm');
+  wsLeet.hidden = next !== 'leetgpu';
+  wsLlm.hidden = next !== 'llm';
+
+  if (next === 'llm') {
+    document.getElementById('brand-logo').textContent = '🧠';
+    if (!llmMounted) {
+      mountLlmSim(wsLlm, updateLlmHeaderMetrics);
+      llmMounted = true;
+    }
+  } else {
+    document.getElementById('brand-logo').textContent = TRACK_META[state.track].icon;
+  }
+
+  if (syncHash) {
+    const targetHash = next === 'llm' ? '#llm' : '#leetgpu';
+    if (window.location.hash !== targetHash) {
+      history.replaceState(null, '', targetHash);
+    }
+  }
+
+  window.scrollTo({ top: 0, behavior: 'instant' });
+  if (!silent) {
+    showToast(next === 'llm' ? '已切换至 🧠 LLM 显存与 4D 并行推演台' : '已切换至 ⚡ LeetGPU 一天速通');
+  }
+}
+
 /* ---------- 主题切换（默认浅色） ---------- */
 function applyTheme(themeName, silent = false) {
   const next = themeName === 'dark' ? 'dark' : 'light';
@@ -171,7 +231,9 @@ function setTrack(trackName, silent = false) {
 
   const meta = TRACK_META[trackName];
   document.getElementById('app-shell').dataset.track = trackName;
-  document.getElementById('brand-logo').textContent = meta.icon;
+  if (state.module === 'leetgpu') {
+    document.getElementById('brand-logo').textContent = meta.icon;
+  }
   document.querySelectorAll('[data-track-btn]').forEach((btn) => {
     btn.classList.toggle('active', btn.dataset.trackBtn === trackName);
   });
@@ -922,6 +984,17 @@ function init() {
     if (e.key === 'Enter' || e.key === ' ') setView('roadmap');
   });
 
+  // 一级模块切换按钮
+  document.querySelectorAll('[data-module-btn]').forEach((btn) => {
+    btn.addEventListener('click', () => setModule(btn.dataset.moduleBtn));
+  });
+
+  // 监听 URL Hash 变化（支持 #llm / #leetgpu 直达）
+  window.addEventListener('hashchange', () => {
+    if (window.location.hash === '#llm') setModule('llm', { syncHash: false, silent: true });
+    else if (window.location.hash === '#leetgpu') setModule('leetgpu', { syncHash: false, silent: true });
+  });
+
   // 双轨主切换按钮
   document.querySelectorAll('[data-track-btn]').forEach((btn) => {
     btn.addEventListener('click', () => setTrack(btn.dataset.trackBtn));
@@ -960,9 +1033,10 @@ function init() {
     document.getElementById('mobile-menu-btn').setAttribute('aria-expanded', String(isOpen));
   });
 
-  // 键盘快捷键（非输入框焦点下）
+  // 键盘快捷键（非输入框焦点下，仅在 LeetGPU 模块生效）
   document.addEventListener('keydown', (e) => {
     if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) return;
+    if (state.module !== 'leetgpu') return;
     if (e.key === 't' || e.key === 'T') {
       setTrack(state.track === 'triton' ? 'cuda' : 'triton');
       return;
@@ -993,6 +1067,11 @@ function init() {
   applyTheme(state.theme || 'light', true);
   setTrack(state.track, true);
   setView(state.view);
+
+  // 根据 URL Hash 或上次记忆决定初始模块
+  const hash = window.location.hash;
+  const initialModule = hash === '#llm' ? 'llm' : hash === '#leetgpu' ? 'leetgpu' : (state.module || 'leetgpu');
+  setModule(initialModule, { syncHash: Boolean(hash), silent: true });
 }
 
 init();

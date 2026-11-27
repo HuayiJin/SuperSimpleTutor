@@ -3,13 +3,14 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>LeetGPU 一天速通 — Triton &amp; CUDA 双轨攻克前 10 题</title>
-  <meta name="description" content="Triton 极速轨 + CUDA C++ 硬核轨双轨合一：一天吃透 LeetGPU 官方前 10 题，掌握最省力与高分提速实战写法。" />
+  <title>SuperSimpleTutor — LeetGPU 双轨速通 &amp; LLM 4D 并行显存推演台</title>
+  <meta name="description" content="AI Infra 极简互动学习平台：涵盖 LeetGPU 前 10 题（Triton & CUDA 双轨速通）与 LLM 分布式训练显存 / 4D 并行推演台。" />
   <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="modules/llm-sim.css" />
 </head>
 <body>
-  <div class="app-shell" id="app-shell" data-track="triton">
-    <!-- 顶部导航栏 -->
+  <div class="app-shell" id="app-shell" data-track="triton" data-module="leetgpu">
+    <!-- 顶部全局导航栏 -->
     <header class="topbar" role="banner">
       <div class="topbar-left">
         <button id="mobile-menu-btn" class="icon-btn mobile-only" aria-label="切换题目目录" aria-expanded="false">
@@ -18,18 +19,29 @@
         <div class="brand" id="brand-home" role="button" tabindex="0">
           <span class="brand-logo" id="brand-logo" aria-hidden="true">⚡</span>
           <div class="brand-text">
-            <span class="brand-title">LeetGPU <span class="accent-emerald">一天速通</span></span>
-            <span class="brand-sub" id="brand-sub">Triton &amp; CUDA 双轨 · 前 10 题全通关</span>
+            <span class="brand-title">SuperSimple<span class="accent-emerald">Tutor</span></span>
+            <span class="brand-sub" id="brand-sub">AI Infra 互动教程台</span>
           </div>
+        </div>
+
+        <!-- 一级应用模块切换器 -->
+        <div class="module-switcher" role="tablist" aria-label="平台工具模块">
+          <button class="module-btn active" data-module-btn="leetgpu" role="tab" aria-selected="true">
+            <span aria-hidden="true">⚡</span>LeetGPU 前10题
+          </button>
+          <button class="module-btn" data-module-btn="llm" role="tab" aria-selected="false">
+            <span aria-hidden="true">🧠</span>LLM 4D 显存推演
+          </button>
         </div>
       </div>
 
-      <nav class="topbar-tabs" role="tablist" aria-label="主功能区">
+      <!-- LeetGPU 专属子视图导航 -->
+      <nav class="topbar-tabs leetgpu-only" role="tablist" aria-label="LeetGPU 子功能区">
         <button class="nav-tab active" data-view="roadmap" role="tab" aria-selected="true">
           <span class="tab-dot"></span>一天路线图
         </button>
         <button class="nav-tab" data-view="studio" role="tab" aria-selected="false">
-          <span class="tab-dot"></span>10 题精讲实验室
+          <span class="tab-dot"></span>10 题实验室
         </button>
         <button class="nav-tab" data-view="cheatsheet" role="tab" aria-selected="false">
           <span class="tab-dot"></span>双轨速查表
@@ -37,34 +49,52 @@
       </nav>
 
       <div class="topbar-right">
-        <!-- 核心双轨切换器：始终可见 -->
-        <div class="track-switcher" role="group" aria-label="学习主轨切换" title="快捷键 T 随时切换 Triton / CUDA 主轨">
-          <button class="track-btn active" data-track-btn="triton">
-            <span class="track-dot track-dot-triton"></span>Triton 轨
-          </button>
-          <button class="track-btn" data-track-btn="cuda">
-            <span class="track-dot track-dot-cuda"></span>CUDA 轨
-          </button>
+        <!-- LeetGPU 专属右侧状态：双轨切换 + 进度/积分 -->
+        <div class="topbar-group leetgpu-only">
+          <div class="track-switcher" role="group" aria-label="学习主轨切换" title="快捷键 T 随时切换 Triton / CUDA 主轨">
+            <button class="track-btn active" data-track-btn="triton">
+              <span class="track-dot track-dot-triton"></span>Triton
+            </button>
+            <button class="track-btn" data-track-btn="cuda">
+              <span class="track-dot track-dot-cuda"></span>CUDA
+            </button>
+          </div>
+
+          <div class="progress-cluster" aria-live="polite">
+            <div class="stat-pill" title="当前主轨已完成题数">
+              <span class="stat-label" id="stat-track-label">Triton</span>
+              <strong id="solved-count">0/10</strong>
+            </div>
+            <div class="stat-pill stat-pill-pts" title="当前主轨预估积分">
+              <span class="stat-label">积分</span>
+              <strong id="points-count">0 / 120</strong>
+            </div>
+          </div>
         </div>
 
-        <div class="progress-cluster" aria-live="polite">
-          <div class="stat-pill" title="当前主轨已完成题数">
-            <span class="stat-label" id="stat-track-label">Triton</span>
-            <strong id="solved-count">0/10</strong>
+        <!-- LLM 推演台专属右侧实时指标 -->
+        <div class="topbar-group llm-only" aria-live="polite">
+          <div class="stat-pill" title="模型总参数量 P">
+            <span class="stat-label">参数</span>
+            <strong id="llm-hdr-params">--</strong>
           </div>
-          <div class="stat-pill stat-pill-pts" title="当前主轨预估积分">
-            <span class="stat-label">积分</span>
-            <strong id="points-count">0 / 120</strong>
+          <div class="stat-pill" title="重计算算力代价">
+            <span class="stat-label">重算</span>
+            <strong id="llm-hdr-compute" class="accent-amber">+0.0%</strong>
+          </div>
+          <div class="stat-pill stat-pill-vram" id="llm-hdr-vram-pill" title="单卡峰值显存 / 上限">
+            <span class="stat-label">显存</span>
+            <strong id="llm-hdr-vram">--</strong>
           </div>
         </div>
 
+        <!-- 全站共享浅色/深色主题切换 -->
         <button id="theme-toggle-btn" class="icon-btn theme-btn" aria-label="切换浅色/深色主题" title="切换深色/浅色主题">🌙</button>
       </div>
     </header>
 
-    <!-- 主工作区 -->
-    <div class="workspace">
-      <!-- 左侧边栏：10 题目录 -->
+    <!-- 模块 1：LeetGPU 一天速通工作区 -->
+    <div class="workspace" id="workspace-leetgpu">
       <aside class="sidebar" id="sidebar" aria-label="10 题学习目录">
         <div class="sidebar-header">
           <div class="sidebar-title-row">
@@ -105,20 +135,16 @@
         </div>
       </aside>
 
-      <!-- 主内容区 -->
       <main class="main-content" id="main-content" tabindex="-1">
-        <!-- 视图 1：一天路线图 -->
-        <section id="view-roadmap" class="view-section active" aria-labelledby="roadmap-heading">
-        </section>
-
-        <!-- 视图 2：10 题精讲工作室 -->
-        <section id="view-studio" class="view-section" aria-labelledby="studio-heading">
-        </section>
-
-        <!-- 视图 3：双轨速查表 -->
-        <section id="view-cheatsheet" class="view-section" aria-labelledby="cheatsheet-heading">
-        </section>
+        <section id="view-roadmap" class="view-section active" aria-labelledby="roadmap-heading"></section>
+        <section id="view-studio" class="view-section" aria-labelledby="studio-heading"></section>
+        <section id="view-cheatsheet" class="view-section" aria-labelledby="cheatsheet-heading"></section>
       </main>
+    </div>
+
+    <!-- 模块 2：LLM 分布式训练显存与 4D 并行推演台（100% 全宽） -->
+    <div class="llm-workspace" id="workspace-llm" hidden>
+      <!-- modules/llm-sim.js 挂载区 -->
     </div>
   </div>
 
