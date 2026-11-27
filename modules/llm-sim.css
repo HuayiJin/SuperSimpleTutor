@@ -610,6 +610,186 @@
 .llm-sim .seg-val { font-size: 16px; font-weight: 700; margin-top: 6px; }
 .llm-sim .seg-desc { font-size: 11px; color: var(--llm-text-sub); margin-top: 4px; line-height: 1.5; }
 
+/* Quick Approximate Formula Bar & Hover Popovers */
+.llm-sim .quick-est-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 11px 14px;
+  border-radius: 12px;
+  background: var(--llm-subtle);
+  border: 1px dashed var(--llm-border-strong);
+}
+
+.llm-sim .quick-est-left {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.llm-sim .quick-est-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--llm-text);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.llm-sim .quick-est-total {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--llm-tc-sky);
+}
+
+.llm-sim .quick-est-diff {
+  font-size: 11px;
+  color: var(--llm-text-muted);
+}
+
+.llm-sim .quick-est-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+}
+
+.llm-sim .formula-trigger {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--llm-border-strong);
+  background: var(--llm-surface);
+  color: var(--llm-text-sub);
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: help;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+
+.llm-sim .formula-trigger:hover,
+.llm-sim .formula-trigger:focus-visible {
+  border-color: #0284c7;
+  color: var(--llm-text);
+  background: var(--llm-preset-active-bg);
+}
+
+.llm-sim .formula-trigger.guide-chip {
+  border-color: var(--purple-border);
+  background: var(--purple-soft);
+  color: var(--llm-tc-violet);
+}
+
+.llm-sim .fx-badge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  font-style: italic;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--cyan-soft);
+  color: var(--llm-tc-sky);
+}
+
+.llm-sim .seg-fx-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  cursor: help;
+}
+
+.llm-sim .formula-popover {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 0;
+  z-index: 60;
+  width: 330px;
+  max-width: min(360px, 86vw);
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--llm-surface);
+  border: 1px solid var(--llm-border-strong);
+  box-shadow: 0 14px 36px rgba(15, 23, 42, 0.18);
+  color: var(--llm-text);
+  text-align: left;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(6px);
+  transition: opacity 0.16s ease, transform 0.16s ease, visibility 0.16s ease;
+}
+
+:root[data-theme="dark"] .llm-sim .formula-popover {
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
+}
+
+.llm-sim .formula-popover.align-right {
+  left: auto;
+  right: 0;
+}
+
+.llm-sim .formula-popover.wide {
+  width: 380px;
+  max-width: min(400px, 88vw);
+}
+
+.llm-sim .formula-trigger:hover .formula-popover,
+.llm-sim .formula-trigger:focus-within .formula-popover,
+.llm-sim .seg-fx-wrap:hover .formula-popover,
+.llm-sim .seg-fx-wrap:focus-within .formula-popover {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.llm-sim .popover-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--llm-text);
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.llm-sim .popover-eq {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  padding: 7px 9px;
+  border-radius: 7px;
+  background: var(--llm-subtle);
+  border: 1px solid var(--llm-border);
+  color: var(--llm-tc-sky);
+  margin-bottom: 6px;
+  word-break: break-word;
+}
+
+.llm-sim .popover-steps {
+  margin: 0;
+  padding-left: 16px;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--llm-text-sub);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.llm-sim .popover-note {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--llm-text-muted);
+}
+
 .llm-sim .tc-sky { color: var(--llm-tc-sky); }
 .llm-sim .tc-indigo { color: var(--llm-tc-indigo); }
 .llm-sim .tc-violet { color: var(--llm-tc-violet); }

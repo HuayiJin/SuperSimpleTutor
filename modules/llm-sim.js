@@ -898,6 +898,33 @@ export function mountLlmSim(container, onMetricsUpdate) {
         render();
       }
     });
+
+    // 智能防裁切：鼠标悬停或键盘聚焦公式触发器时，自动微调浮层左右位置避免超出视口
+    const clampPopover = (trigger) => {
+      const pop = trigger?.querySelector('.formula-popover');
+      if (!pop) return;
+      pop.style.left = '';
+      pop.style.right = '';
+      const rect = pop.getBoundingClientRect();
+      const pad = 12;
+      if (rect.right > window.innerWidth - pad) {
+        pop.style.left = 'auto';
+        pop.style.right = '0px';
+      }
+      const afterRight = pop.getBoundingClientRect();
+      if (afterRight.left < pad) {
+        pop.style.right = 'auto';
+        pop.style.left = `${Math.max(0, pad - trigger.getBoundingClientRect().left)}px`;
+      }
+    };
+    $('right-panel').addEventListener('mouseover', (e) => {
+      const trig = e.target.closest('.formula-trigger, .seg-fx-wrap');
+      if (trig) clampPopover(trig);
+    });
+    $('right-panel').addEventListener('focusin', (e) => {
+      const trig = e.target.closest('.formula-trigger, .seg-fx-wrap');
+      if (trig) clampPopover(trig);
+    });
   }
 
   function render() {
@@ -1062,7 +1089,114 @@ export function mountLlmSim(container, onMetricsUpdate) {
     renderRightPanel(topology, memStats);
   }
 
+  function computeQuickApprox(topology, memStats) {
+    const { TP: tp, PP: pp, CP: cp, zeroDomain, S_local, layersPerStage } = topology;
+    const { H, L, H_ff, n_h, n_kv, V, tieEmbeddings, MBS, S, fp32GradBuffer, zeroStage, SP, flashAttn, chunkedCe, ckptMode, includeSysOverhead } = state;
+
+    // 1. 快速心算总参数量 P（近似口诀）
+    const gqaFactor = 2 * (1 + n_kv / Math.max(1, n_h)); // Q+O 占 2H^2, K+V 占 2*(n_kv/n_h)*H^2
+    const embMult = tieEmbeddings ? 1 : 2;
+    const approxLayerP = gqaFactor * H * H + 3 * H * H_ff;
+    const approxEmbP = embMult * V * H;
+    const approxTotalP = L * approxLayerP + approxEmbP;
+
+    // 2. 快速心算静态显存（经典 16P / 18P 混合精度口诀）
+    const staticCoeff = fp32GradBuffer ? 18 : 16; // 2W + (4 or 2)G + 12Opt
+    const wCoeff = 2 / (zeroStage >= 3 ? zeroDomain : 1);
+    const gCoeff = (fp32GradBuffer ? 4 : 2) / (zeroStage >= 2 ? zeroDomain : 1);
+    const oCoeff = 12 / (zeroStage >= 1 ? zeroDomain : 1);
+    const effCoeff = wCoeff + gCoeff + oCoeff;
+    const approxStageP = pp > 1 ? approxTotalP / pp + V * H : approxTotalP;
+    const approxStaticBytes = (approxStageP / tp) * effCoeff;
+
+    // 3. 快速心算动态激活（Megatron 34·B·S·H vs 全重算 2·B·S·H 速算）
+    const spFactor = SP && tp > 1 ? tp : 1;
+    let actCoeffPerLayer = 34; // 经典无重算约 34·B·S·H（FlashAttn 下）
+    let actModeText = '无重算经典口诀 ≈ 34·B·S_local·H / TP';
+    if (!flashAttn) {
+      actCoeffPerLayer = 34 + (5 * n_h * S) / Math.max(1, H);
+      actModeText = '未开 FlashAttn：34·B·S·H + 5·B·n_h·S² (S² 项爆炸)';
+    } else if (ckptMode === 'selective') {
+      actCoeffPerLayer = 18;
+      actModeText = '选择性重算经验值 ≈ 18·B·S_local·H / TP';
+    } else if (ckptMode === 'block' && memStats.effectiveRecompLayers > 0) {
+      const ratio = memStats.effectiveRecompLayers / Math.max(1, layersPerStage);
+      actCoeffPerLayer = 34 * (1 - ratio) + (2 / Math.max(1, memStats.effectiveBlockSize)) * ratio;
+      actModeText = `块级重算 ≈ (2/G)·B·S_local·H（每 ${memStats.effectiveBlockSize} 层存 1 份输入）`;
+    }
+    const baseBsh = MBS * S_local * H;
+    const approxLayerActBytes = (actCoeffPerLayer * baseBsh * layersPerStage * memStats.inFlightMicroBatches) / Math.max(tp, spFactor);
+    const approxLogitsBytes = chunkedCe ? 0 : (6 * MBS * S_local * V) / tp;
+    const approxActBytes = approxLayerActBytes + approxLogitsBytes;
+
+    const approxSysBytes = includeSysOverhead ? 2.5 * (1024 ** 3) : 0;
+    const approxTotalBytes = approxStaticBytes + approxActBytes + approxSysBytes;
+    const diffPct = memStats.totalPeakBytes > 0
+      ? ((approxTotalBytes - memStats.totalPeakBytes) / memStats.totalPeakBytes) * 100
+      : 0;
+
+    // 按不同模型给出「大概怎么口算」的 3 步攻略
+    let modelName = '当前自定义模型';
+    let modelSteps = [];
+    if (state.presetId === 'toy') {
+      modelName = '极简 Transformer (0.5B · Tie Emb)';
+      modelSteps = [
+        `Step 1 估参数：GQA 下每层约 (${gqaFactor.toFixed(1)}H² + 3H·H_ff) ≈ ${formatParams(approxLayerP)}，24 层 ≈ ${formatParams(L * approxLayerP)}，共享词表只加 1×V·H ≈ ${formatParams(approxEmbP)} → 共约 ${formatParams(approxTotalP)}。`,
+        `Step 2 估静态：AdamW 混合精度直接背「${staticCoeff}P 口诀」→ ${staticCoeff} × ${formatParams(approxTotalP)} ≈ ${formatGiB(approxStaticBytes)}。`,
+        `Step 3 估激活：单卡无重算按每层 ~34·B·S·H 乘以 L=${L}（再看词表 Logits 6·B·S·V），手算误差通常在 ±15% 以内！`
+      ];
+    } else if (state.presetId === 'qwen3_8b') {
+      modelName = 'Qwen3-8B Dense（15万大词表 + GQA）';
+      modelSteps = [
+        `Step 1 估参数：36 层稠密体约 ${formatParams(L * approxLayerP)}；⚠️ Qwen 词表 15 万且不共享，2·V·H ≈ ${formatParams(approxEmbP)}（占 15% 绝不能漏！），合计 ≈ ${formatParams(approxTotalP)}。`,
+        `Step 2 估静态：未切分前 18P ≈ ${formatGiB(approxTotalP * 18)}（80G 单卡必炸）；当前按 TP=${tp} + ZeRO-${zeroStage}(域=${zeroDomain}) 折算系数 ${effCoeff.toFixed(1)}P → 约 ${formatGiB(approxStaticBytes)}。`,
+        `Step 3 估激活：B=${MBS}, S=${S}, H=${H}，未开分块 Loss 时大词表 Logits (6·B·S·V ≈ ${formatGiB(approxLogitsBytes)}) 也很占显存，开分块 Loss + 重算可立刻减负！`
+      ];
+    } else if (state.presetId === 'qwen3_32b_long') {
+      modelName = 'Qwen3-32B 长文本 64K（激活主导）';
+      modelSteps = [
+        `Step 1 估参数：64 层 × (${gqaFactor.toFixed(1)}H² + 3H·H_ff) + 2·V·H ≈ ${formatParams(approxTotalP)}；经 TP=${tp}、ZeRO-${zeroStage} 切分后静态仅约 ${formatGiB(approxStaticBytes)}。`,
+        `Step 2 先切序列：64K 序列是 OOM 罪魁祸首！CP=${cp} 把单卡序列压到 S_local=${Math.round(S_local)}，每层激活与 Logits 同步缩 ${cp} 倍。`,
+        `Step 3 压激活大头：长文本必须「FlashAttn + 分块 Loss + 重计算」三件套，把每层激活从 ~34·B·S_local·H 压到 ~2·B·S_local·H 才能稳进 80G！`
+      ];
+    } else if (state.presetId === 'scale_70b') {
+      modelName = '70B 级超大规模（64 卡 4D 并行）';
+      modelSteps = [
+        `Step 1 估参数：经典口诀 12·L·H² ≈ ${formatParams(12 * L * H * H)}，考虑 SwiGLU (H_ff≈3.5H) 与 15万大词表修正后约 ${formatParams(approxTotalP)}。`,
+        `Step 2 估瓶颈 Stage：PP=${pp} 把 80 层拆成每卡 ${layersPerStage} 层，TP=${tp} 再切 8 份，但首/末 Stage 需多扛 1 份词表 V·H/TP，静态 ≈ ${formatGiB(approxStaticBytes)}。`,
+        `Step 3 估流水线激活：PP Stage 0 要同时扛 inFlight=${memStats.inFlightMicroBatches} 份在飞 micro-batch 激活（DualPipe 还会再叠加延后 dW 缓冲）。`
+      ];
+    } else {
+      modelName = `自定义模型 (${formatParams(approxTotalP)} · L=${L}, H=${H})`;
+      modelSteps = [
+        `Step 1 估参数：L×(${gqaFactor.toFixed(1)}H² + 3H·H_ff) + ${embMult}·V·H ≈ ${formatParams(approxTotalP)}（经典粗估 12·L·H² = ${formatParams(12 * L * H * H)}）。`,
+        `Step 2 估静态：基准 ${staticCoeff}P 按当前 TP=${tp}、PP=${pp}、ZeRO-${zeroStage}(域=${zeroDomain}) 折算为 ${effCoeff.toFixed(1)}P_stage/TP ≈ ${formatGiB(approxStaticBytes)}。`,
+        `Step 3 估激活：单卡序列 S_local=${Math.round(S_local)}，${actModeText}，叠加 ${memStats.inFlightMicroBatches} 份在飞与 Logits ≈ ${formatGiB(approxActBytes)}。`
+      ];
+    }
+
+    return {
+      approxTotalP,
+      approxLayerP,
+      approxEmbP,
+      gqaFactor,
+      embMult,
+      staticCoeff,
+      effCoeff,
+      approxStaticBytes,
+      approxActBytes,
+      approxLogitsBytes,
+      approxTotalBytes,
+      diffPct,
+      actCoeffPerLayer,
+      actModeText,
+      modelName,
+      modelSteps
+    };
+  }
+
   function renderRightPanel(topology, memStats) {
+    const approx = computeQuickApprox(topology, memStats);
     const barScaleMax = Math.max(memStats.totalPeakBytes, memStats.vramBytes);
     const vramLinePct = Math.min(100, (memStats.vramBytes / barScaleMax) * 100);
 
@@ -1074,6 +1208,8 @@ export function mountLlmSim(container, onMetricsUpdate) {
         bg: 'bg-sky',
         tc: 'tc-sky',
         cardCls: 'sky',
+        formula: `2B × P_stage ÷ (TP=${topology.TP} × Z3=${state.zeroStage >= 3 ? topology.zeroDomain : 1})`,
+        formulaNote: 'BF16/FP16 权重每参数占 2 字节，仅 ZeRO-3 会切分权重。',
         desc: `瓶颈 Stage 参数经 TP(${topology.TP})${state.zeroStage >= 3 ? `×ZeRO-3(${topology.zeroDomain})` : ''} 切分`
       },
       {
@@ -1083,6 +1219,8 @@ export function mountLlmSim(container, onMetricsUpdate) {
         bg: 'bg-indigo',
         tc: 'tc-indigo',
         cardCls: 'indigo',
+        formula: `${memStats.gradCoeff}B × P_stage ÷ (TP=${topology.TP} × Z2=${state.zeroStage >= 2 ? topology.zeroDomain : 1})`,
+        formulaNote: '梯度累积 (GAS) 是在同一块梯度桶原地累加，不会乘以 GAS。',
         desc: `${state.fp32GradBuffer ? 'FP32' : 'BF16'} 累加桶，GAS=${state.GAS} 原地累加不翻倍`
       },
       {
@@ -1092,6 +1230,8 @@ export function mountLlmSim(container, onMetricsUpdate) {
         bg: 'bg-violet',
         tc: 'tc-violet',
         cardCls: 'violet',
+        formula: `(4B Master + 8B Adam m,v) × P_stage ÷ (TP=${topology.TP} × Z1=${state.zeroStage >= 1 ? topology.zeroDomain : 1})`,
+        formulaNote: 'AdamW 优化器占 12P 是静态最大头，ZeRO-1 即可切分它！',
         desc: `4P Master + 8P m/v，经 ZeRO 域 (${state.zeroStage >= 1 ? topology.zeroDomain : 1}) 切分${
           memStats.zero3TempBytes > 0 ? `，含 Z3 通信桶 ${formatGiB(memStats.zero3TempBytes)}` : ''
         }`
@@ -1103,6 +1243,8 @@ export function mountLlmSim(container, onMetricsUpdate) {
         bg: 'bg-emerald',
         tc: 'tc-emerald',
         cardCls: 'emerald',
+        formula: `≈ ${approx.actCoeffPerLayer.toFixed(0)}·B·(S/CP)·H × L_stage × inFlight(${memStats.inFlightMicroBatches}) ÷ TP${state.chunkedCe ? '' : ' + 6·B·S_local·V/TP'}`,
+        formulaNote: approx.actModeText,
         desc: `${memStats.bottleneckStageLabel}，单卡序列 S_local=${Math.round(topology.S_local)}`
       },
       {
@@ -1112,6 +1254,8 @@ export function mountLlmSim(container, onMetricsUpdate) {
         bg: 'bg-amber',
         tc: 'tc-amber',
         cardCls: 'amber',
+        formula: `重算临时块(${formatGiB(memStats.recompWorkspaceBytes)}) + 反向梯度缓冲 + CP 环传(${formatGiB(memStats.cpCommBufferBytes)})`,
+        formulaNote: '块级重计算每 G 层重算时会瞬时展开 G 层完整激活工作区。',
         desc: `重算区 ${formatGiB(memStats.recompWorkspaceBytes)} + 梯度临时区 + CP 缓冲 ${formatGiB(memStats.cpCommBufferBytes)}`
       }
     ];
@@ -1124,6 +1268,8 @@ export function mountLlmSim(container, onMetricsUpdate) {
         bg: 'bg-slate',
         tc: 'tc-slate',
         cardCls: 'slate',
+        formula: '≈ 2.0 GiB (CUDA/NCCL 上下文) + 5% × 峰值张量显存',
+        formulaNote: 'PyTorch Caching Allocator 内存碎片与通信内核基础占用。',
         desc: '约 2 GiB 基础上下文 + 5% 显存分配器碎片安全余量'
       });
     }
@@ -1144,6 +1290,57 @@ export function mountLlmSim(container, onMetricsUpdate) {
       ? `<button id="llm-btn-recipe" class="btn-recipe">${ICONS.sparklesXs}<span>逐步叠加优化配方</span></button>`
       : '';
 
+    const diffSign = approx.diffPct >= 0 ? '+' : '';
+    const quickEstHtml = `
+      <div class="quick-est-bar">
+        <div class="quick-est-left">
+          <span class="quick-est-label">⚡ 快速心算近似</span>
+          <span class="quick-est-total font-mono tabular-nums">≈ ${formatGiB(approx.approxTotalBytes)}</span>
+          <span class="quick-est-diff font-mono">（相对精确模型 ${diffSign}${approx.diffPct.toFixed(1)}% · 悬停查看算式）</span>
+        </div>
+        <div class="quick-est-chips">
+          <div class="formula-trigger" tabindex="0">
+            <span class="fx-badge">fx</span>
+            <span>参数 P ≈ ${formatParams(approx.approxTotalP)}</span>
+            <div class="formula-popover">
+              <div class="popover-title"><span>参数量快速心算公式</span><span class="font-mono tc-sky">GQA + SwiGLU</span></div>
+              <div class="popover-eq">P ≈ L·(${approx.gqaFactor.toFixed(2)}·H² + 3·H·H_ff) + ${approx.embMult}·V·H<br/>= ${state.L}×${formatParams(approx.approxLayerP)} + ${formatParams(approx.approxEmbP)} ≈ <strong>${formatParams(approx.approxTotalP)}</strong></div>
+              <div class="popover-note">• 经典粗估 <code>12·L·H²</code> 适用于 MHA + H_ff=4H；现代 GQA+SwiGLU 用上式更准，且大词表（如 Qwen 15万）绝不能漏掉 ${approx.embMult}·V·H！</div>
+            </div>
+          </div>
+
+          <div class="formula-trigger" tabindex="0">
+            <span class="fx-badge">fx</span>
+            <span>静态 ≈ ${formatGiB(approx.approxStaticBytes)}</span>
+            <div class="formula-popover">
+              <div class="popover-title"><span>静态显存 16P / 18P 黄金口诀</span><span class="font-mono tc-violet">${approx.effCoeff.toFixed(1)}P/TP</span></div>
+              <div class="popover-eq">单卡静态 ≈ (P_stage / TP) × (2/Z3 + ${state.fp32GradBuffer ? 4 : 2}/Z2 + 12/Z1)<br/>= (${formatParams(memStats.stageParams)} / ${topology.TP}) × ${approx.effCoeff.toFixed(2)}B ≈ <strong>${formatGiB(approx.approxStaticBytes)}</strong></div>
+              <div class="popover-note">• 混合精度 AdamW 满配口诀：权重 2P + 梯度 ${state.fp32GradBuffer ? '4P(FP32)' : '2P(BF16)'} + 优化器 12P = <strong>${approx.staticCoeff}P</strong>；ZeRO-1/2/3 分别把 12P / ${state.fp32GradBuffer ? 4 : 2}P / 2P 除以切分域(${topology.zeroDomain})。</div>
+            </div>
+          </div>
+
+          <div class="formula-trigger" tabindex="0">
+            <span class="fx-badge">fx</span>
+            <span>激活 ≈ ${formatGiB(approx.approxActBytes)}</span>
+            <div class="formula-popover align-right">
+              <div class="popover-title"><span>动态激活 B·S·H 速算口诀</span><span class="font-mono tc-emerald">≈ ${approx.actCoeffPerLayer.toFixed(0)}·B·S·H</span></div>
+              <div class="popover-eq">激活 ≈ ${approx.actCoeffPerLayer.toFixed(1)}·B·S_local·H·L_stage·inFlight / TP${state.chunkedCe ? '' : ' + 6·B·S_local·V/TP'}<br/>S_local=${Math.round(topology.S_local)}, L_stage=${memStats.layersPerStage}, inFlight=${memStats.inFlightMicroBatches} → <strong>${formatGiB(approx.approxActBytes)}</strong></div>
+              <div class="popover-note">• ${approx.actModeText}。<br/>• 记两个锚点就够面试用：<strong>无重算 ≈ 34·B·S·H/层</strong>，<strong>全重算 ≈ 2·B·S·H/层</strong>！</div>
+            </div>
+          </div>
+
+          <div class="formula-trigger guide-chip" tabindex="0">
+            <span>📖 本模型怎么口算？</span>
+            <div class="formula-popover align-right wide">
+              <div class="popover-title"><span>${approx.modelName}</span><span class="font-mono tc-violet">3 步心算指南</span></div>
+              <ol class="popover-steps">
+                ${approx.modelSteps.map((s) => `<li>${s}</li>`).join('')}
+              </ol>
+            </div>
+          </div>
+        </div>
+      </div>`;
+
     const barSegsHtml = segments.map((seg) => {
       const widthPct = (seg.bytes / barScaleMax) * 100;
       if (widthPct <= 0.2) return '';
@@ -1153,8 +1350,9 @@ export function mountLlmSim(container, onMetricsUpdate) {
         </div>`;
     }).join('');
 
-    const segCardsHtml = segments.map((seg) => {
+    const segCardsHtml = segments.map((seg, idx) => {
       const pctOfTotal = memStats.totalPeakBytes > 0 ? (seg.bytes / memStats.totalPeakBytes) * 100 : 0;
+      const alignCls = idx % 3 === 2 ? 'align-right' : '';
       return `
         <div class="seg-card ${seg.cardCls}">
           <div class="seg-card-top">
@@ -1162,7 +1360,17 @@ export function mountLlmSim(container, onMetricsUpdate) {
               <span class="seg-dot ${seg.bg}"></span>
               <span class="seg-title truncate">${seg.label}</span>
             </div>
-            <span class="seg-pct font-mono">${pctOfTotal.toFixed(1)}%</span>
+            <div style="display:flex;align-items:center;gap:5px;flex-shrink:0;">
+              <span class="seg-fx-wrap" tabindex="0" aria-label="查看 ${seg.label} 近似算式">
+                <span class="fx-badge">fx</span>
+                <div class="formula-popover ${alignCls}">
+                  <div class="popover-title"><span>${seg.label} · 近似公式</span><span class="font-mono ${seg.tc}">${formatGiB(seg.bytes)}</span></div>
+                  <div class="popover-eq">${seg.formula}</div>
+                  <div class="popover-note">${seg.formulaNote}</div>
+                </div>
+              </span>
+              <span class="seg-pct font-mono">${pctOfTotal.toFixed(1)}%</span>
+            </div>
           </div>
           <div class="seg-val font-mono tabular-nums ${seg.tc}">${formatGiB(seg.bytes)}</div>
           <p class="seg-desc">${seg.desc}</p>
@@ -1355,6 +1563,7 @@ export function mountLlmSim(container, onMetricsUpdate) {
         </div>
 
         <div class="seg-grid">${segCardsHtml}</div>
+        ${quickEstHtml}
       </div>
 
       <div class="strip-grid">

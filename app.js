@@ -184,12 +184,14 @@ function setModule(modName, { syncHash = true, silent = false } = {}) {
 
   if (next === 'llm') {
     document.getElementById('brand-logo').textContent = '🧠';
+    document.title = 'LLM 4D 显存推演台 · AI Infra 极简实战台 | SuperSimpleTutor';
     if (!llmMounted) {
       mountLlmSim(wsLlm, updateLlmHeaderMetrics);
       llmMounted = true;
     }
   } else {
     document.getElementById('brand-logo').textContent = TRACK_META[state.track].icon;
+    document.title = 'LeetGPU 双轨速通 · AI Infra 极简实战台 | SuperSimpleTutor';
   }
 
   if (syncHash) {
