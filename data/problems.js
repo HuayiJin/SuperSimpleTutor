@@ -149,20 +149,18 @@ export const PROBLEMS = [
           '连续地址 + 合法 mask 即可吃满显存带宽，拿下高分段性能。'
         ],
         drill: {
-          prompt: '补全 Triton 1D 模板最关键的两处：防越界掩码与网格数计算。',
-          template: `pid = tl.program_id(axis=0)
-offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-mask = {{BLANK_1}}
-a = tl.load(a_ptr + offsets, mask=mask)
-b = tl.load(b_ptr + offsets, mask=mask)
-tl.store(c_ptr + offsets, a + b, mask=mask)
-
-grid = ({{BLANK_2}},)`,
+          prompt: '在完整代码中补全两处核心逻辑：空 1（防越界掩码）、空 2（向上取整网格块数）。',
           blanks: [
-            { id: 'BLANK_1', placeholder: 'offsets < ...', answers: ['offsets < N', 'offsets < n_elements', 'offsets<N'] },
-            { id: 'BLANK_2', placeholder: 'triton.cdiv(...)', answers: ['triton.cdiv(N, BLOCK_SIZE)', 'triton.cdiv(N,BLOCK_SIZE)', '(N + BLOCK_SIZE - 1) // BLOCK_SIZE'] }
+            { id: 'BLANK_1', match: 'offsets < N', placeholder: '空 1', answers: ['offsets < N', 'offsets < n_elements', 'offsets<N'] },
+            { id: 'BLANK_2', match: 'triton.cdiv(N, BLOCK_SIZE)', placeholder: '空 2', answers: ['triton.cdiv(N, BLOCK_SIZE)', 'triton.cdiv(N,BLOCK_SIZE)', '(N + BLOCK_SIZE - 1) // BLOCK_SIZE'] }
           ],
-          hint: '第一个空检查 offsets < N；第二个空用向上取整函数 triton.cdiv(N, BLOCK_SIZE)。'
+          checks: [
+            { label: '包含 @triton.jit 内核与 solve 入口', regex: '@triton\\.jit[\\s\\S]*def\\s+solve' },
+            { label: '计算块偏移 (program_id + arange)', regex: 'tl\\.program_id[\\s\\S]*tl\\.arange' },
+            { label: '越界保护 mask (offsets < N)', regex: 'offsets\\s*<\\s*(N|n_elements)' },
+            { label: '原地写出结果 (tl.store)', regex: 'tl\\.store\\(' }
+          ],
+          hint: '空 1 检查 offsets < N；空 2 用向上取整函数 triton.cdiv(N, BLOCK_SIZE)。'
         }
       },
       cuda: {
@@ -176,19 +174,18 @@ grid = ({{BLANK_2}},)`,
           '因为前段处理 vecN = N / 4，Grid 大小按 vecN 计算，末尾由最后一个合法线程顺手扫尾即可。'
         ],
         drill: {
-          prompt: '补全 CUDA 全局线程索引公式，以及 1D Grid 向上取整块数公式。',
-          template: `__global__ void vec_add(const float* A, const float* B, float* C, int N) {
-    int idx = {{BLANK_1}};
-    if (idx < N) C[idx] = A[idx] + B[idx];
-}
-
-int threads = 256;
-int blocks = {{BLANK_2}};`,
+          prompt: '在完整 CUDA 代码中补全两处核心：空 1（1D 全局线程号）、空 2（按 vecN 向上取整的网格块数）。',
           blanks: [
-            { id: 'BLANK_1', placeholder: 'blockIdx.x * ...', answers: ['blockIdx.x * blockDim.x + threadIdx.x', 'blockDim.x * blockIdx.x + threadIdx.x'] },
-            { id: 'BLANK_2', placeholder: '(N + threads - 1) / ...', answers: ['(N + threads - 1) / threads', '(N+threads-1)/threads'] }
+            { id: 'BLANK_1', match: 'blockIdx.x * blockDim.x + threadIdx.x', placeholder: '空 1', answers: ['blockIdx.x * blockDim.x + threadIdx.x', 'blockDim.x * blockIdx.x + threadIdx.x'] },
+            { id: 'BLANK_2', match: '(vecN + threads - 1) / threads', placeholder: '空 2', answers: ['(vecN + threads - 1) / threads', '(vecN+threads-1)/threads'] }
           ],
-          hint: '全局索引为 blockIdx.x * blockDim.x + threadIdx.x；向上取整块数为 (N + threads - 1) / threads。'
+          checks: [
+            { label: '包含 extern "C" void solve 入口', regex: 'extern\\s+"C"\\s+void\\s+solve' },
+            { label: '计算全局线程号 blockIdx.x * blockDim.x + threadIdx.x', regex: 'blockIdx\\.x[\\s\\S]*threadIdx\\.x' },
+            { label: '使用 <<<blocks, threads>>> 启动 Kernel', regex: '<<<[\\s\\S]+>>>' },
+            { label: '包含越界保护 if (idx < ...)', regex: 'if\\s*\\(\\s*idx\\s*<' }
+          ],
+          hint: '空 1 为 blockIdx.x * blockDim.x + threadIdx.x；空 2 为 (vecN + threads - 1) / threads。'
         }
       }
     },
@@ -301,20 +298,17 @@ def solve(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, N: int):
           '纯带宽受限算子，去掉任何多余的 2D 乘法索引就是提速。'
         ],
         drill: {
-          prompt: 'Matrix Copy 传入的是边长 N（矩阵为 N×N），补全展平后的总元素数与写出语句。',
-          template: `def solve(a: torch.Tensor, b: torch.Tensor, N: int):
-    n_elements = {{BLANK_1}}
-    BLOCK_SIZE = 1024
-    grid = (triton.cdiv(n_elements, BLOCK_SIZE),)
-    matrix_copy_kernel[grid](a, b, n_elements, BLOCK_SIZE=BLOCK_SIZE)
-
-    val = tl.load(a_ptr + offsets, mask=mask)
-    {{BLANK_2}}`,
+          prompt: '在完整代码中补全两处：空 1（写回目标张量 b）、空 2（N×N 展平后的总元素数）。',
           blanks: [
-            { id: 'BLANK_1', placeholder: '总元素数', answers: ['N * N', 'N*N', 'a.numel()'] },
-            { id: 'BLANK_2', placeholder: 'tl.store(...)', answers: ['tl.store(b_ptr + offsets, val, mask=mask)', 'tl.store(b_ptr+offsets, val, mask=mask)'] }
+            { id: 'BLANK_1', match: 'tl.store(b_ptr + offsets, val, mask=mask)', placeholder: '空 1', answers: ['tl.store(b_ptr + offsets, val, mask=mask)', 'tl.store(b_ptr+offsets, val, mask=mask)'] },
+            { id: 'BLANK_2', match: 'N * N', placeholder: '空 2', answers: ['N * N', 'N*N', 'a.numel()'] }
           ],
-          hint: 'N×N 矩阵共有 N * N 个元素；写出用 tl.store(b_ptr + offsets, val, mask=mask)。'
+          checks: [
+            { label: '包含 @triton.jit 与 solve 入口', regex: '@triton\\.jit[\\s\\S]*def\\s+solve' },
+            { label: '正确展平总元素数 N * N (或 numel)', regex: '(N\\s*\\*\\s*N|numel\\(\\))' },
+            { label: '包含 tl.load 与 tl.store 带 mask', regex: 'tl\\.load[\\s\\S]*tl\\.store' }
+          ],
+          hint: '空 1 用 tl.store(b_ptr + offsets, val, mask=mask)；空 2 是 N * N（矩阵是 N×N）。'
         }
       },
       cuda: {
@@ -327,18 +321,17 @@ def solve(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, N: int):
           '在 CUDA 里如果 N 很大（如 N=16384），N*N 约 2.68 亿在 int 范围内，用 size_t 更稳妥。'
         ],
         drill: {
-          prompt: '补全 CUDA 展平总元素数，以及 float4 向量拷贝核心语句。',
-          template: `size_t total = {{BLANK_1}};
-size_t vecN = total / 4;
-size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
-if (idx < vecN) {
-    reinterpret_cast<float4*>(B)[idx] = {{BLANK_2}};
-}`,
+          prompt: '在完整代码中补全两处：空 1（float4 源矩阵读取）、空 2（N×N 展平后的总元素数）。',
           blanks: [
-            { id: 'BLANK_1', placeholder: '(size_t)N * N', answers: ['(size_t)N * N', 'N * N', 'N*N', 'static_cast<size_t>(N) * N'] },
-            { id: 'BLANK_2', placeholder: 'reinterpret_cast<const float4*>(A)[idx]', answers: ['reinterpret_cast<const float4*>(A)[idx]'] }
+            { id: 'BLANK_1', match: 'reinterpret_cast<const float4*>(A)[idx]', placeholder: '空 1', answers: ['reinterpret_cast<const float4*>(A)[idx]'] },
+            { id: 'BLANK_2', match: '(size_t)N * N', placeholder: '空 2', answers: ['(size_t)N * N', 'N * N', 'N*N', 'static_cast<size_t>(N) * N'] }
           ],
-          hint: '总元素数为 (size_t)N * N（或 N * N）；源读取为 reinterpret_cast<const float4*>(A)[idx]。'
+          checks: [
+            { label: '包含 extern "C" void solve 入口', regex: 'extern\\s+"C"\\s+void\\s+solve' },
+            { label: '正确计算 N * N 总元素数', regex: 'N\\s*\\*\\s*N' },
+            { label: '完成 A → B 的显存拷贝（Kernel 或 cudaMemcpy）', regex: '(B\\[|cudaMemcpy|float4)' }
+          ],
+          hint: '空 1 读源矩阵用 reinterpret_cast<const float4*>(A)[idx]；空 2 总元素数为 (size_t)N * N。'
         }
       }
     },
@@ -440,14 +433,16 @@ def solve(a: torch.Tensor, b: torch.Tensor, N: int):
           'BLOCK_SIZE = 1024 足以打满显存带宽。'
         ],
         drill: {
-          prompt: '补全 ReLU 核心计算行（推荐单指令无分支写法）。',
-          template: `x = tl.load(input_ptr + offsets, mask=mask)
-out = {{BLANK_1}}
-tl.store(output_ptr + offsets, out, mask=mask)`,
+          prompt: '在完整代码中补全 ReLU 无分支核心计算表达式（空 1）。',
           blanks: [
-            { id: 'BLANK_1', placeholder: 'tl.maximum(...)', answers: ['tl.maximum(x, 0.0)', 'tl.maximum(x, 0)', 'tl.where(x > 0, x, 0.0)'] }
+            { id: 'BLANK_1', match: 'tl.maximum(x, 0.0)', placeholder: '空 1', answers: ['tl.maximum(x, 0.0)', 'tl.maximum(x, 0)', 'tl.where(x > 0, x, 0.0)', 'tl.where(x > 0.0, x, 0.0)'] }
           ],
-          hint: '使用 tl.maximum(x, 0.0) 或 tl.where(x > 0, x, 0.0)。'
+          checks: [
+            { label: '包含 @triton.jit 与 solve 入口', regex: '@triton\\.jit[\\s\\S]*def\\s+solve' },
+            { label: '使用无分支 tl.maximum 或 tl.where', regex: '(tl\\.maximum|tl\\.where)' },
+            { label: '包含 mask 保护与 tl.store', regex: 'mask[\\s\\S]*tl\\.store' }
+          ],
+          hint: '推荐单周期硬件指令写法：tl.maximum(x, 0.0)（或 tl.where(x > 0, x, 0.0)）。'
         }
       },
       cuda: {
@@ -460,14 +455,14 @@ tl.store(output_ptr + offsets, out, mask=mask)`,
           '叠加 float4 向量化后，ReLU 可以稳定跑在显存带宽上限附近。'
         ],
         drill: {
-          prompt: '补全单精度无分支硬件取最大值函数（注意 f 后缀，防止 double 降速）。',
-          template: `float4 v = reinterpret_cast<const float4*>(input)[idx];
-v.x = {{BLANK_1}};
-v.y = fmaxf(0.0f, v.y);
-v.z = fmaxf(0.0f, v.z);
-v.w = fmaxf(0.0f, v.w);`,
+          prompt: '在完整代码中补全单精度无分支 ReLU 函数调用（空 1，注意防止 double 降速）。',
           blanks: [
-            { id: 'BLANK_1', placeholder: 'fmaxf(...)', answers: ['fmaxf(0.0f, v.x)', 'fmaxf(v.x, 0.0f)'] }
+            { id: 'BLANK_1', match: 'fmaxf(0.0f, v.x)', placeholder: '空 1', answers: ['fmaxf(0.0f, v.x)', 'fmaxf(v.x, 0.0f)'] }
+          ],
+          checks: [
+            { label: '包含 extern "C" void solve 入口', regex: 'extern\\s+"C"\\s+void\\s+solve' },
+            { label: '使用单精度 fmaxf 或三目 > 0.0f', regex: '(fmaxf|>\\s*0\\.0f)' },
+            { label: '包含边界判断与 Kernel 启动', regex: '<<<[\\s\\S]+>>>' }
           ],
           hint: '单精度函数是 fmaxf(0.0f, v.x)。'
         }
@@ -576,14 +571,16 @@ def solve(input: torch.Tensor, output: torch.Tensor, N: int):
           'Sprint 1 四连击完成，已稳拿 40 分！'
         ],
         drill: {
-          prompt: '用 Triton 向量条件原语写出 Leaky ReLU（负数乘以 0.01）。',
-          template: `x = tl.load(input_ptr + offsets, mask=mask)
-out = {{BLANK_1}}
-tl.store(output_ptr + offsets, out, mask=mask)`,
+          prompt: '在完整代码中补全 Leaky ReLU 的无分支向量条件选择（空 1，负斜率为 0.01）。',
           blanks: [
-            { id: 'BLANK_1', placeholder: 'tl.where(...)', answers: ['tl.where(x > 0, x, 0.01 * x)', 'tl.where(x > 0.0, x, 0.01 * x)', 'tl.where(x > 0, x, x * 0.01)', 'tl.where(x >= 0, x, 0.01 * x)'] }
+            { id: 'BLANK_1', match: 'tl.where(x > 0, x, 0.01 * x)', placeholder: '空 1', answers: ['tl.where(x > 0, x, 0.01 * x)', 'tl.where(x > 0.0, x, 0.01 * x)', 'tl.where(x > 0, x, x * 0.01)', 'tl.where(x >= 0, x, 0.01 * x)'] }
           ],
-          hint: '语法为 tl.where(x > 0, x, 0.01 * x)。'
+          checks: [
+            { label: '包含 @triton.jit 与 solve 入口', regex: '@triton\\.jit[\\s\\S]*def\\s+solve' },
+            { label: '使用 tl.where 做向量谓词选择', regex: 'tl\\.where\\(' },
+            { label: '使用负斜率 0.01 并写回输出', regex: '0\\.01[\\s\\S]*tl\\.store' }
+          ],
+          hint: '用向量条件原语 tl.where(x > 0, x, 0.01 * x)。'
         }
       },
       cuda: {
@@ -596,14 +593,16 @@ tl.store(output_ptr + offsets, out, mask=mask)`,
           '配合 float4 向量化，与 ReLU 一样可以跑满显存带宽！'
         ],
         drill: {
-          prompt: '补全单精度无分支 Leaky ReLU 内联函数（别忘了 f 后缀！）。',
-          template: `__device__ __forceinline__ float lrelu(float x) {
-    return {{BLANK_1}};
-}`,
+          prompt: '在完整代码中补全单精度无分支 Leaky ReLU 返回表达式（空 1）。',
           blanks: [
-            { id: 'BLANK_1', placeholder: 'x > 0.0f ? ...', answers: ['x > 0.0f ? x : 0.01f * x', 'x > 0.0f ? x : x * 0.01f', 'x >= 0.0f ? x : 0.01f * x', 'x > 0 ? x : 0.01f * x'] }
+            { id: 'BLANK_1', match: 'x > 0.0f ? x : 0.01f * x', placeholder: '空 1', answers: ['x > 0.0f ? x : 0.01f * x', 'x > 0.0f ? x : x * 0.01f', 'x >= 0.0f ? x : 0.01f * x', 'x > 0 ? x : 0.01f * x'] }
           ],
-          hint: '使用三目运算符：x > 0.0f ? x : 0.01f * x。'
+          checks: [
+            { label: '包含 extern "C" void solve 入口', regex: 'extern\\s+"C"\\s+void\\s+solve' },
+            { label: '包含单精度负斜率 0.01f', regex: '0\\.01f' },
+            { label: '包含 Kernel 启动 <<<...>>>', regex: '<<<[\\s\\S]+>>>' }
+          ],
+          hint: '单精度三目运算符：x > 0.0f ? x : 0.01f * x。'
         }
       }
     },
@@ -711,21 +710,17 @@ def solve(input: torch.Tensor, output: torch.Tensor, N: int):
           'N 为奇数时正中间元素 N // 2 自然被跳过，奇偶长度统一正确。'
         ],
         drill: {
-          prompt: '补全对称右端索引公式与原地防重复交换的循环上限。',
-          template: `half = {{BLANK_1}}
-offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-mask = offsets < half
-
-right_offsets = {{BLANK_2}}
-left_vals = tl.load(input_ptr + offsets, mask=mask)
-right_vals = tl.load(input_ptr + right_offsets, mask=mask)
-tl.store(input_ptr + offsets, right_vals, mask=mask)
-tl.store(input_ptr + right_offsets, left_vals, mask=mask)`,
+          prompt: '在完整代码中补全两处核心：空 1（避免反转两次的半长上限）、空 2（对称右端下标）。',
           blanks: [
-            { id: 'BLANK_1', placeholder: '只处理前一半', answers: ['N // 2', 'N//2'] },
-            { id: 'BLANK_2', placeholder: '对称右端偏移', answers: ['N - 1 - offsets', 'N-1-offsets'] }
+            { id: 'BLANK_1', match: 'N // 2', placeholder: '空 1', answers: ['N // 2', 'N//2'] },
+            { id: 'BLANK_2', match: 'N - 1 - offsets', placeholder: '空 2', answers: ['N - 1 - offsets', 'N-1-offsets'] }
           ],
-          hint: '只处理前半段 half = N // 2；与 offsets 对称的右端下标是 N - 1 - offsets。'
+          checks: [
+            { label: '只启动前一半 N // 2 防止并发冲突', regex: 'N\\s*//\\s*2' },
+            { label: '计算对称右端下标 N - 1 - offsets', regex: 'N\\s*-\\s*1\\s*-\\s*offsets' },
+            { label: '交叉写回左右两端', regex: 'tl\\.store[\\s\\S]*tl\\.store' }
+          ],
+          hint: '空 1 只处理前半段 N // 2；空 2 与 offsets 对称的右端下标是 N - 1 - offsets。'
         }
       },
       cuda: {
@@ -738,20 +733,17 @@ tl.store(input_ptr + right_offsets, left_vals, mask=mask)`,
           '若想更进一步：当 N 为 4 的倍数时可用 float4 两端各读 4 个并在寄存器内逆序重排 (.w, .z, .y, .x) 写回！'
         ],
         drill: {
-          prompt: '补全 CUDA 原地反转的边界上限和对称右端下标。',
-          template: `int half = {{BLANK_1}};
-int idx = blockIdx.x * blockDim.x + threadIdx.x;
-if (idx < half) {
-    int mirror = {{BLANK_2}};
-    float tmp = input[idx];
-    input[idx] = input[mirror];
-    input[mirror] = tmp;
-}`,
+          prompt: '在完整代码中补全两处核心：空 1（防并发冲突的一半长度）、空 2（镜像右端下标）。',
           blanks: [
-            { id: 'BLANK_1', placeholder: 'N / 2', answers: ['N / 2', 'N/2'] },
-            { id: 'BLANK_2', placeholder: 'N - 1 - idx', answers: ['N - 1 - idx', 'N-1-idx'] }
+            { id: 'BLANK_1', match: 'N / 2', placeholder: '空 1', answers: ['N / 2', 'N/2'] },
+            { id: 'BLANK_2', match: 'N - 1 - idx', placeholder: '空 2', answers: ['N - 1 - idx', 'N-1-idx'] }
           ],
-          hint: 'C++ 整数除法 half = N / 2；镜像下标 mirror = N - 1 - idx。'
+          checks: [
+            { label: '包含 extern "C" void solve 入口', regex: 'extern\\s+"C"\\s+void\\s+solve' },
+            { label: '仅遍历前一半 N / 2 避免重复交换', regex: 'N\\s*/\\s*2' },
+            { label: '使用对称下标 N - 1 - idx 原地互换', regex: 'N\\s*-\\s*1\\s*-\\s*idx' }
+          ],
+          hint: '空 1 为整数除法 N / 2；空 2 镜像下标为 N - 1 - idx。'
         }
       }
     },
@@ -861,16 +853,17 @@ def solve(input: torch.Tensor, N: int):
           'Grid 传的是 num_pixels = width * height（不是 * 4）。'
         ],
         drill: {
-          prompt: '补全小端序下的 uint32 指针强转和保留 Alpha 通道的位异或掩码！',
-          template: `image_u32 = image_ptr.to({{BLANK_1}})
-pixels = tl.load(image_u32 + offsets, mask=mask)
-inverted = pixels ^ {{BLANK_2}}
-tl.store(image_u32 + offsets, inverted, mask=mask)`,
+          prompt: '在完整代码中补全两处核心：空 1（4 字节打包指针类型）、空 2（小端序保留 Alpha 的异或掩码）。',
           blanks: [
-            { id: 'BLANK_1', placeholder: 'tl.pointer_type(...)', answers: ['tl.pointer_type(tl.uint32)'] },
-            { id: 'BLANK_2', placeholder: '0x........', answers: ['0x00FFFFFF', '0x00ffffff', '0xFFFFFF', '0xffffff'] }
+            { id: 'BLANK_1', match: 'tl.pointer_type(tl.uint32)', placeholder: '空 1', answers: ['tl.pointer_type(tl.uint32)'] },
+            { id: 'BLANK_2', match: 'pixels ^ 0x00FFFFFF', placeholder: '空 2', answers: ['pixels ^ 0x00FFFFFF', 'pixels ^ 0x00ffffff', 'pixels^0x00FFFFFF', 'pixels ^ 0xFFFFFF'] }
           ],
-          hint: '指针强转为 tl.pointer_type(tl.uint32)；小端序保留 Alpha 的异或掩码为 0x00FFFFFF。'
+          checks: [
+            { label: '包含 @triton.jit 与 solve(image, width, height)', regex: '@triton\\.jit[\\s\\S]*def\\s+solve' },
+            { label: '强转为 uint32 指针或按像素数 width * height 调度', regex: '(pointer_type\\(tl\\.uint32\\)|width\\s*\\*\\s*height)' },
+            { label: '反色 RGB 同时保留 Alpha（^ 0x00FFFFFF 或 255 -）', regex: '(0x00?[fF]{6}|255\\s*-)' }
+          ],
+          hint: '空 1 为 tl.pointer_type(tl.uint32)；空 2 为 pixels ^ 0x00FFFFFF（小端序高 8 位是 Alpha）。'
         }
       },
       cuda: {
@@ -883,16 +876,17 @@ tl.store(image_u32 + offsets, inverted, mask=mask)`,
           '零分支、零取模、零减法，纯位运算直接贴近 GPU 理论内存带宽天花板。'
         ],
         drill: {
-          prompt: '补全 CUDA 中用 uint32 打包原地反色（保留 Alpha）的关键两行。',
-          template: `unsigned int* pixels = {{BLANK_1}}(image);
-if (idx < num_pixels) {
-    pixels[idx] ^= {{BLANK_2}};
-}`,
+          prompt: '在完整代码中补全两处核心：空 1（小端序保留 Alpha 的位掩码）、空 2（一次读取 4 个像素的指针强转）。',
           blanks: [
-            { id: 'BLANK_1', placeholder: 'reinterpret_cast<...>', answers: ['reinterpret_cast<unsigned int*>', 'reinterpret_cast<uint32_t*>'] },
-            { id: 'BLANK_2', placeholder: '0x........u', answers: ['0x00FFFFFFu', '0x00FFFFFF', '0x00ffffffu', '0x00ffffff'] }
+            { id: 'BLANK_1', match: '0x00FFFFFFu', placeholder: '空 1', answers: ['0x00FFFFFFu', '0x00FFFFFF', '0x00ffffffu', '0x00ffffff'] },
+            { id: 'BLANK_2', match: 'reinterpret_cast<uint4*>(image)[idx]', placeholder: '空 2', answers: ['reinterpret_cast<uint4*>(image)[idx]'] }
           ],
-          hint: '指针强转用 reinterpret_cast<unsigned int*>；异或掩码为 0x00FFFFFFu。'
+          checks: [
+            { label: '包含 extern "C" void solve 入口', regex: 'extern\\s+"C"\\s+void\\s+solve' },
+            { label: '反色 RGB 且保持 Alpha 不变', regex: '(0x00?[fF]{6}u?|255\\s*-)' },
+            { label: '使用 width * height 计算像素规模', regex: 'width\\s*\\*\\s*height' }
+          ],
+          hint: '空 1 异或掩码为 0x00FFFFFFu；空 2 为 reinterpret_cast<uint4*>(image)[idx]。'
         }
       }
     },
@@ -1010,19 +1004,17 @@ def solve(image: torch.Tensor, width: int, height: int):
           'BLOCK 选 32 或 64，刚好贴合 128B 缓存行。'
         ],
         drill: {
-          prompt: '补全 2D 分块转置最关键的两步：片上转置与转置后的输出地址计算。',
-          template: `in_ptrs = input_ptr + offs_r[:, None] * cols + offs_c[None, :]
-tile = tl.load(in_ptrs, mask=(offs_r[:, None] < rows) & (offs_c[None, :] < cols))
-
-tile_t = {{BLANK_1}}
-
-out_ptrs = output_ptr + {{BLANK_2}}
-tl.store(out_ptrs, tile_t, mask=(offs_c[:, None] < cols) & (offs_r[None, :] < rows))`,
+          prompt: '在完整代码中补全 2D 分块转置两处关键：空 1（片上块转置）、空 2（转置后的输出 2D 偏移）。',
           blanks: [
-            { id: 'BLANK_1', placeholder: 'tl.trans(...)', answers: ['tl.trans(tile)'] },
-            { id: 'BLANK_2', placeholder: 'offs_c[:, None] * ...', answers: ['offs_c[:, None] * rows + offs_r[None, :]', 'offs_c[:, None]*rows + offs_r[None, :]'] }
+            { id: 'BLANK_1', match: 'tl.trans(tile)', placeholder: '空 1', answers: ['tl.trans(tile)'] },
+            { id: 'BLANK_2', match: 'offs_c[:, None] * rows + offs_r[None, :]', placeholder: '空 2', answers: ['offs_c[:, None] * rows + offs_r[None, :]', 'offs_c[:, None]*rows + offs_r[None, :]'] }
           ],
-          hint: '片上转置用 tl.trans(tile)；转置后每行长度是 rows，故偏移为 offs_c[:, None] * rows + offs_r[None, :]。'
+          checks: [
+            { label: '使用 2D program_id (axis=0 和 axis=1)', regex: 'program_id\\((axis=)?0\\)[\\s\\S]*program_id\\((axis=)?1\\)' },
+            { label: '调用片上转置 tl.trans', regex: 'tl\\.trans\\(' },
+            { label: '正确写出转置后地址 (* rows +)', regex: '\\*\\s*rows\\s*\\+' }
+          ],
+          hint: '空 1 片上转置用 tl.trans(tile)；空 2 转置后每行长为 rows，偏移为 offs_c[:, None] * rows + offs_r[None, :]。'
         }
       },
       cuda: {
@@ -1035,17 +1027,17 @@ tl.store(out_ptrs, tile_t, mask=(offs_c[:, None] < cols) & (offs_r[None, :] < ro
           '读全局显存按 `threadIdx.x` 连续，写全局显存也按 `threadIdx.x` 连续，带宽直冲朴素版的 6~10 倍！'
         ],
         drill: {
-          prompt: '补全消除 Shared Memory Bank Conflict 的声明（TILE=32）与块内同步语句。',
-          template: `__shared__ float smem[TILE][{{BLANK_1}}];
-int x = blockIdx.x * TILE + threadIdx.x;
-int y = blockIdx.y * TILE + threadIdx.y;
-if (y < rows && x < cols) smem[threadIdx.y][threadIdx.x] = input[y * cols + x];
-{{BLANK_2}};`,
+          prompt: '在完整代码中补全两处核心：空 1（消除 Bank Conflict 的共享内存第二维）、空 2（块内线程同步）。',
           blanks: [
-            { id: 'BLANK_1', placeholder: 'TILE + ...', answers: ['TILE + 1', 'TILE+1', '33'] },
-            { id: 'BLANK_2', placeholder: '块内同步函数', answers: ['__syncthreads()', '__syncthreads'] }
+            { id: 'BLANK_1', match: 'TILE + 1', placeholder: '空 1', answers: ['TILE + 1', 'TILE+1', '33'] },
+            { id: 'BLANK_2', match: '__syncthreads()', placeholder: '空 2', answers: ['__syncthreads()', '__syncthreads'] }
           ],
-          hint: '第二维开成 TILE + 1（即 33）消除 Bank Conflict；同步用 __syncthreads()。'
+          checks: [
+            { label: '包含 extern "C" void solve 入口', regex: 'extern\\s+"C"\\s+void\\s+solve' },
+            { label: '声明 __shared__ 分块并加 +1 列 Padding', regex: '__shared__[\\s\\S]*(\\+\\s*1|33)' },
+            { label: '调用 __syncthreads() 同步', regex: '__syncthreads\\s*\\(\\s*\\)' }
+          ],
+          hint: '空 1 第二维开成 TILE + 1（即 33）消除 Bank Conflict；空 2 同步原语为 __syncthreads()。'
         }
       }
     },
@@ -1159,18 +1151,17 @@ def solve(input: torch.Tensor, output: torch.Tensor, rows: int, cols: int):
           'BLOCK_SIZE = 1024 让相邻输出共享绝大部分 input 缓存行。'
         ],
         drill: {
-          prompt: '补全 Valid 1D 卷积的输出长度公式，以及滑窗循环里的累加语句。',
-          template: `output_size = {{BLANK_1}}
-acc = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
-for k in range(kernel_size):
-    x_vals = tl.load(input_ptr + offsets + k, mask=mask, other=0.0)
-    k_val = tl.load(kernel_ptr + k)
-    acc += {{BLANK_2}}`,
+          prompt: '在完整代码中补全两处：空 1（滑窗内层乘加项）、空 2（Valid 卷积输出长度）。',
           blanks: [
-            { id: 'BLANK_1', placeholder: 'Valid 输出长度', answers: ['input_size - kernel_size + 1', 'input_size-kernel_size+1'] },
-            { id: 'BLANK_2', placeholder: '乘积累加', answers: ['x_vals * k_val', 'k_val * x_vals'] }
+            { id: 'BLANK_1', match: 'x_val * k_val', placeholder: '空 1', answers: ['x_val * k_val', 'k_val * x_val'] },
+            { id: 'BLANK_2', match: 'input_size - kernel_size + 1', placeholder: '空 2', answers: ['input_size - kernel_size + 1', 'input_size-kernel_size+1'] }
           ],
-          hint: 'Valid 输出长度为 input_size - kernel_size + 1；每一步累加 x_vals * k_val。'
+          checks: [
+            { label: '包含寄存器累加器 tl.zeros', regex: 'tl\\.zeros\\(' },
+            { label: '沿 kernel_size 循环累加 offsets + k', regex: 'range\\(kernel_size\\)[\\s\\S]*offsets\\s*\\+\\s*k' },
+            { label: '正确计算 Valid 输出长度 input_size - kernel_size + 1', regex: 'input_size\\s*-\\s*kernel_size\\s*\\+\\s*1' }
+          ],
+          hint: '空 1 每步累加 x_val * k_val；空 2 Valid 输出长度为 input_size - kernel_size + 1。'
         }
       },
       cuda: {
@@ -1183,21 +1174,17 @@ for k in range(kernel_size):
           '用 `fmaf(a, b, acc)` 或 `acc += a * b` 编译为单周期 FFMA 指令，精度高且吞吐翻倍。'
         ],
         drill: {
-          prompt: '补全 CUDA Valid 1D 卷积输出长度，以及使用 __ldg 只读缓存的乘积累加行。',
-          template: `int output_size = {{BLANK_1}};
-if (idx < output_size) {
-    float acc = 0.0f;
-    #pragma unroll 4
-    for (int k = 0; k < kernel_size; ++k) {
-        acc += {{BLANK_2}};
-    }
-    output[idx] = acc;
-}`,
+          prompt: '在完整代码中补全两处：空 1（只读缓存融合乘加语句）、空 2（Valid 卷积输出长度）。',
           blanks: [
-            { id: 'BLANK_1', placeholder: 'input_size - ...', answers: ['input_size - kernel_size + 1', 'input_size-kernel_size+1'] },
-            { id: 'BLANK_2', placeholder: '__ldg(&input[idx + k]) * ...', answers: ['__ldg(&input[idx + k]) * __ldg(&kernel[k])', 'input[idx + k] * kernel[k]', '__ldg(input + idx + k) * __ldg(kernel + k)'] }
+            { id: 'BLANK_1', match: 'fmaf(__ldg(&input[idx + k]), __ldg(&kernel[k]), acc)', placeholder: '空 1', answers: ['fmaf(__ldg(&input[idx + k]), __ldg(&kernel[k]), acc)', 'acc + __ldg(&input[idx + k]) * __ldg(&kernel[k])', 'acc + input[idx + k] * kernel[k]'] },
+            { id: 'BLANK_2', match: 'input_size - kernel_size + 1', placeholder: '空 2', answers: ['input_size - kernel_size + 1', 'input_size-kernel_size+1'] }
           ],
-          hint: '输出长度 input_size - kernel_size + 1；乘加项为 __ldg(&input[idx + k]) * __ldg(&kernel[k])（或 input[idx + k] * kernel[k]）。'
+          checks: [
+            { label: '包含 extern "C" void solve 入口', regex: 'extern\\s+"C"\\s+void\\s+solve' },
+            { label: '计算 Valid 输出长度 input_size - kernel_size + 1', regex: 'input_size\\s*-\\s*kernel_size\\s*\\+\\s*1' },
+            { label: '循环 kernel_size 累加 input[idx + k] * kernel[k]', regex: 'input\\[idx\\s*\\+\\s*k\\]' }
+          ],
+          hint: '空 1 为 fmaf(__ldg(&input[idx + k]), __ldg(&kernel[k]), acc)（或 acc + input[idx + k] * kernel[k]）；空 2 为 input_size - kernel_size + 1。'
         }
       }
     },
@@ -1324,20 +1311,17 @@ def solve(input: torch.Tensor, kernel: torch.Tensor, output: torch.Tensor, input
           '加载时越界位置必须填 other=0.0，否则垃圾值会污染整个输出块！'
         ],
         drill: {
-          prompt: '避开 LeetGPU 维度大坑（A: M×N, B: N×K, C: M×K），补全缩并维循环与 tl.dot！',
-          template: `acc = tl.zeros((BLOCK_M, BLOCK_K), dtype=tl.float32)
-for n_start in range(0, {{BLANK_1}}, BLOCK_N):
-    offs_n = n_start + tl.arange(0, BLOCK_N)
-    a = tl.load(a_ptr + offs_m[:, None] * N + offs_n[None, :],
-                mask=(offs_m[:, None] < M) & (offs_n[None, :] < N), other=0.0)
-    b = tl.load(b_ptr + offs_n[:, None] * K + offs_k[None, :],
-                mask=(offs_n[:, None] < N) & (offs_k[None, :] < K), other=0.0)
-    acc += {{BLANK_2}}`,
+          prompt: '避开 LeetGPU 维度大坑（A: M×N, B: N×K, C: M×K），补全两处核心：空 1（沿公共维分块循环）、空 2（带精度保护的块乘）。',
           blanks: [
-            { id: 'BLANK_1', placeholder: '公共缩并维', answers: ['N'] },
-            { id: 'BLANK_2', placeholder: 'tl.dot(...)', answers: ['tl.dot(a, b)', 'tl.dot(a, b, input_precision="ieee")', "tl.dot(a, b, input_precision='ieee')"] }
+            { id: 'BLANK_1', match: 'range(0, N, BLOCK_N)', placeholder: '空 1', answers: ['range(0, N, BLOCK_N)', 'range(0,N,BLOCK_N)'] },
+            { id: 'BLANK_2', match: 'tl.dot(a, b, input_precision="ieee")', placeholder: '空 2', answers: ['tl.dot(a, b, input_precision="ieee")', "tl.dot(a, b, input_precision='ieee')", 'tl.dot(a, b)'] }
           ],
-          hint: 'LeetGPU 公共维是 N；块乘累加用 tl.dot(a, b, input_precision="ieee")。'
+          checks: [
+            { label: '沿公共维 N 分块循环', regex: 'range\\(\\s*0\\s*,\\s*N' },
+            { label: '加载越界补零 other=0.0', regex: 'other\\s*=\\s*0(\\.0)?' },
+            { label: '使用 tl.dot 做块矩阵乘', regex: 'tl\\.dot\\(' }
+          ],
+          hint: '空 1 公共维是 N，写 range(0, N, BLOCK_N)；空 2 用 tl.dot(a, b, input_precision="ieee")。'
         }
       },
       cuda: {
@@ -1350,21 +1334,18 @@ for n_start in range(0, {{BLANK_1}}, BLOCK_N):
           '内层 16 次点积加 `#pragma unroll` 全部留在寄存器里跑 FFMA，算术强度（Arithmetic Intensity）暴涨 16 倍！'
         ],
         drill: {
-          prompt: '补全 16×16 Shared Memory Tiled GEMM 的公共维分块数，以及加载后/计算后的同步原语！',
-          template: `int numTiles = ({{BLANK_1}} + TILE - 1) / TILE;
-for (int t = 0; t < numTiles; ++t) {
-    // 协同搬运 As[ty][tx] 和 Bs[ty][tx]（越界补 0.0f）
-    ...
-    {{BLANK_2}};
-    #pragma unroll
-    for (int i = 0; i < TILE; ++i) sum += As[ty][i] * Bs[i][tx];
-    __syncthreads();
-}`,
+          prompt: '在完整 16×16 Shared Memory GEMM 中补全两处核心：空 1（公共维分块数）、空 2（协同加载后的块内同步）。',
           blanks: [
-            { id: 'BLANK_1', placeholder: '公共维 N', answers: ['N'] },
-            { id: 'BLANK_2', placeholder: '__syncthreads()', answers: ['__syncthreads()', '__syncthreads'] }
+            { id: 'BLANK_1', match: '(N + TILE - 1) / TILE', placeholder: '空 1', answers: ['(N + TILE - 1) / TILE', '(N+TILE-1)/TILE'] },
+            { id: 'BLANK_2', match: '__syncthreads()', placeholder: '空 2', answers: ['__syncthreads()', '__syncthreads'] }
           ],
-          hint: 'LeetGPU 中公共缩并维是 N；搬进共享内存后必须先调用 __syncthreads() 再开始点积！'
+          checks: [
+            { label: '包含 extern "C" void solve 入口', regex: 'extern\\s+"C"\\s+void\\s+solve' },
+            { label: '声明 __shared__ 子块 As / Bs', regex: '__shared__' },
+            { label: '沿公共维 N 分块并调用 __syncthreads()', regex: '__syncthreads\\s*\\(\\s*\\)' },
+            { label: '按行步长 K 写回 C[row * K + col]', regex: 'row\\s*\\*\\s*K\\s*\\+\\s*col' }
+          ],
+          hint: '空 1 为 (N + TILE - 1) / TILE（公共维是 N）；空 2 同步原语为 __syncthreads()。'
         }
       }
     },
@@ -1501,20 +1482,17 @@ def solve(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, M: int, N: int, K: 
           '算力密集型算子，BLOCK_SIZE=512 寄存器占用率更优。'
         ],
         drill: {
-          prompt: '补全 FNV-1a 32-bit 哈希的单字节混合核心（先异或字节，再乘 FNV 质数）。',
-          template: `FNV_OFFSET = tl.full((), 2166136261, dtype=tl.uint32)
-FNV_PRIME  = tl.full((), 16777619, dtype=tl.uint32)
-
-h = FNV_OFFSET
-for shift in tl.static_range(0, 32, 8):
-    byte = (val >> shift) & 0xFF
-    h = {{BLANK_1}}
-    h = {{BLANK_2}}`,
+          prompt: '在完整代码中补全两处核心：空 1（4 字节编译期展开循环）、空 2（FNV-1a 先异或再乘质数）。',
           blanks: [
-            { id: 'BLANK_1', placeholder: '先异或 byte', answers: ['h ^ byte', 'h^byte'] },
-            { id: 'BLANK_2', placeholder: '再乘 FNV_PRIME', answers: ['h * FNV_PRIME', 'h*FNV_PRIME', 'h * 16777619'] }
+            { id: 'BLANK_1', match: 'tl.static_range(0, 32, 8)', placeholder: '空 1', answers: ['tl.static_range(0, 32, 8)', 'range(0, 32, 8)'] },
+            { id: 'BLANK_2', match: '(h ^ byte) * prime', placeholder: '空 2', answers: ['(h ^ byte) * prime', '(h^byte)*prime', '(h ^ byte) * 16777619'] }
           ],
-          hint: 'FNV-1a 的顺序是「先异或 h ^ byte，再乘质数 h * FNV_PRIME」。'
+          checks: [
+            { label: '包含无符号 uint32 类型转换', regex: 'tl\\.uint32' },
+            { label: '包含 FNV-1a 偏置 2166136261 与质数 16777619', regex: '2166136261[\\s\\S]*16777619' },
+            { label: '在单 Kernel 内循环 R 轮融合计算', regex: 'range\\(R\\)' }
+          ],
+          hint: '空 1 为 tl.static_range(0, 32, 8)；空 2 为 (h ^ byte) * prime（先异或再相乘）。'
         }
       },
       cuda: {
@@ -1527,21 +1505,17 @@ for shift in tl.static_range(0, 32, 8):
           'threads = 256 即可让每个 SM 塞满活跃 Warp，轻松拿下高分。'
         ],
         drill: {
-          prompt: '补全 CUDA 中 FNV-1a 32-bit 哈希函数的无符号常量初始化与字节混合核心。',
-          template: `__device__ __forceinline__ unsigned int fnv1a_hash(unsigned int val) {
-    unsigned int h = {{BLANK_1}};
-    #pragma unroll
-    for (int i = 0; i < 4; ++i) {
-        h ^= (val >> (i * 8)) & 0xFFu;
-        h *= {{BLANK_2}};
-    }
-    return h;
-}`,
+          prompt: '在完整代码中补全 FNV-1a 32-bit 两个标准常量：空 1（初始偏置）、空 2（FNV 质数）。',
           blanks: [
-            { id: 'BLANK_1', placeholder: '2166136261u', answers: ['2166136261u', '2166136261', '0x811c9dc5u', '0x811c9dc5'] },
-            { id: 'BLANK_2', placeholder: '16777619u', answers: ['16777619u', '16777619', '0x01000193u', '0x01000193'] }
+            { id: 'BLANK_1', match: '2166136261u', placeholder: '空 1', answers: ['2166136261u', '2166136261', '0x811c9dc5u', '0x811c9dc5'] },
+            { id: 'BLANK_2', match: '16777619u', placeholder: '空 2', answers: ['16777619u', '16777619', '0x01000193u', '0x01000193'] }
           ],
-          hint: '32-bit FNV-1a 初始偏置为 2166136261u，质数为 16777619u。'
+          checks: [
+            { label: '包含 extern "C" void solve 入口', regex: 'extern\\s+"C"\\s+void\\s+solve' },
+            { label: '使用 unsigned int 做逻辑右移与无符号溢出乘法', regex: 'unsigned\\s+int' },
+            { label: '包含 FNV-1a 常数与 R 轮循环', regex: '(2166136261|0x811c9dc5)[\\s\\S]*(16777619|0x01000193)' }
+          ],
+          hint: '空 1 初始偏置为 2166136261u（0x811c9dc5u）；空 2 质数为 16777619u（0x01000193u）。'
         }
       }
     },

@@ -10,11 +10,14 @@ const DEFAULT_STATE = {
   view: 'roadmap',        // 'roadmap' | 'studio' | 'cheatsheet'
   track: 'triton',        // 'triton' | 'cuda'
   theme: 'light',         // 'light' | 'dark'（默认清爽浅色主题）
+  drillMode: 'fill',      // 'fill' | 'editor'
+  closedBook: false,      // 闭卷练习：隐藏上方参考代码
   activeProblemId: 1,
   activeCodeTab: 'triton', // 'triton' | 'cuda' | 'pytorch'
   sortMode: 'sprint',     // 'sprint' | 'official'
   solvedByTrack: { triton: [], cuda: [] },
-  drillsByTrack: { triton: [], cuda: [] }
+  drillsByTrack: { triton: [], cuda: [] },
+  codeDrafts: {}          // { "triton:1": "...", "cuda:2": "..." }
 };
 
 let state = loadState();
@@ -43,7 +46,8 @@ function loadState() {
         drillsByTrack: {
           triton: Array.isArray(parsed.drillsByTrack?.triton) ? parsed.drillsByTrack.triton : [],
           cuda: Array.isArray(parsed.drillsByTrack?.cuda) ? parsed.drillsByTrack.cuda : []
-        }
+        },
+        codeDrafts: parsed.codeDrafts && typeof parsed.codeDrafts === 'object' ? parsed.codeDrafts : {}
       };
     }
     // 兼容迁移 v1 纯 Triton 进度
@@ -508,6 +512,73 @@ function renderRoadmapView() {
   });
 }
 
+/* ---------- 完整上下文填空 & 手写面板骨架生成 ---------- */
+function buildFullContextDrillHtml(fullSource, drill, lang) {
+  let working = fullSource;
+  const tokens = [];
+
+  drill.blanks.forEach((b, idx) => {
+    const marker = `__DRILL_SLOT_${idx}__`;
+    if (b.match && working.includes(b.match)) {
+      working = working.replace(b.match, marker);
+      tokens.push({ marker, blank: b });
+    }
+  });
+
+  const rawLines = working.split('\n');
+  return rawLines.map((line, i) => {
+    const hasBlank = tokens.some((t) => line.includes(t.marker));
+    let rendered;
+    if (!hasBlank) {
+      rendered = highlightLine(line, lang);
+    } else {
+      rendered = escapeHtml(line);
+      tokens.forEach(({ marker, blank }) => {
+        if (!rendered.includes(marker)) return;
+        const sizeHint = Math.min(34, Math.max(10, Math.round(blank.match.length * 0.85)));
+        const inputTag = `<input type="text" class="drill-input" data-blank-id="${blank.id}" placeholder="${escapeHtml(blank.placeholder)}" style="width:${sizeHint}ch" autocomplete="off" spellcheck="false" />`;
+        rendered = rendered.replace(marker, inputTag);
+      });
+    }
+    return `<div class="drill-line ${hasBlank ? 'has-blank' : ''}"><span class="line-num">${i + 1}</span><span class="line-text">${rendered || ' '}</span></div>`;
+  }).join('');
+}
+
+function buildStarterSkeleton(problem, track) {
+  const tInfo = problem.trackInfo[track];
+  if (track === 'cuda') {
+    return `#include <cuda_runtime.h>
+
+// TODO: 实现 ${problem.title} 的 __global__ GPU Kernel
+__global__ void kernel(/* 参数 */) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    
+}
+
+// LeetGPU 精确入口签名（必须保留 extern "C"）
+${tInfo.signature} {
+    // TODO: 计算 grid / block 并启动 Kernel
+    
+}
+`;
+  }
+  return `import torch
+import triton
+import triton.language as tl
+
+# TODO: 实现 ${problem.title} 的 Triton Kernel
+@triton.jit
+def kernel(/* ptrs, ..., BLOCK_SIZE: tl.constexpr */):
+    pid = tl.program_id(axis=0)
+    
+
+# LeetGPU 精确入口签名（原地写入输出张量）
+${tInfo.signature}
+    # TODO: 配置 BLOCK_SIZE、grid 并启动 kernel[grid](...)
+    pass
+`;
+}
+
 /* ---------- 视图 2：10 题交互精讲工作室（双轨联动） ---------- */
 function renderStudioView() {
   const container = document.getElementById('view-studio');
@@ -551,12 +622,12 @@ function renderStudioView() {
       <p>${a.text}</p>
     </button>`).join('');
 
-  // 构建当前主轨的填空速练 HTML
-  let drillHtml = escapeHtml(tInfo.drill.template);
-  tInfo.drill.blanks.forEach((b) => {
-    const inputTag = `<input type="text" class="drill-input" data-blank-id="${b.id}" placeholder="${escapeHtml(b.placeholder)}" autocomplete="off" spellcheck="false" />`;
-    drillHtml = drillHtml.replace(`{{${b.id}}}`, inputTag);
-  });
+  // 构建当前主轨的完整上下文填空 HTML（直接使用完整程序作为上下文，零剧透 placeholder）
+  const trackFullSource = p.code[track].source;
+  const drillContextHtml = buildFullContextDrillHtml(trackFullSource, tInfo.drill, track);
+  const draftKey = `${track}:${p.id}`;
+  const editorDraft = state.codeDrafts[draftKey] ?? buildStarterSkeleton(p, track);
+  const isEditorMode = state.drillMode === 'editor';
 
   const tipsHtml = tInfo.pointsTips.map((t) => `<li>${t}</li>`).join('');
   const badgeCls = isCuda ? 'badge-cuda' : 'badge-triton';
@@ -615,23 +686,29 @@ function renderStudioView() {
         </div>
       </div>
 
-      <!-- 代码精讲 + 逐行批注面板 -->
-      <div class="code-studio">
-        <div class="code-toolbar">
-          <div class="code-lang-tabs" role="tablist">${tabsHtml}</div>
-          <div style="display:flex;gap:8px;align-items:center">
-            <span style="font-size:11.5px;color:var(--text-muted)">点击带蓝点代码行查看批注</span>
-            <button id="copy-code-btn" class="mini-btn primary-mini" style="flex:0 0 auto">📋 复制代码</button>
-          </div>
-        </div>
-        <div class="code-body-split">
-          <div class="code-pane" aria-label="代码块">${codeLinesHtml}</div>
-          <div class="annotation-pane">
-            <h4>逐行 GPU 原理解析（${lang.toUpperCase()}）</h4>
-            <div class="annotation-list">${annotationsHtml}</div>
-          </div>
-        </div>
-      </div>
+      <!-- 代码精讲 + 逐行批注面板（闭卷模式下可一键折叠） -->
+      ${state.closedBook
+        ? `<div class="code-studio-collapsed">
+            <span>🙈 <strong>闭卷挑战模式已开启</strong>：上方参考代码已隐藏，请直接在下方练习面板独立完成！</span>
+            <button id="reveal-ref-code-btn" class="mini-btn primary-mini" style="flex:0 0 auto">👀 显示参考代码</button>
+          </div>`
+        : `<div class="code-studio">
+            <div class="code-toolbar">
+              <div class="code-lang-tabs" role="tablist">${tabsHtml}</div>
+              <div style="display:flex;gap:8px;align-items:center">
+                <span style="font-size:11.5px;color:var(--text-muted)">点击带蓝点代码行查看批注</span>
+                <button id="hide-ref-code-btn" class="mini-btn" title="隐藏参考代码进行闭卷练习">🙈 闭卷隐藏</button>
+                <button id="copy-code-btn" class="mini-btn primary-mini" style="flex:0 0 auto">📋 复制代码</button>
+              </div>
+            </div>
+            <div class="code-body-split">
+              <div class="code-pane" aria-label="代码块">${codeLinesHtml}</div>
+              <div class="annotation-pane">
+                <h4>逐行 GPU 原理解析（${lang.toUpperCase()}）</h4>
+                <div class="annotation-list">${annotationsHtml}</div>
+              </div>
+            </div>
+          </div>`}
 
       <!-- LeetGPU 避坑提醒 -->
       <div class="callout callout-amber">
@@ -645,31 +722,61 @@ function renderStudioView() {
       <!-- 交互式 GPU 可视化实验室（随主轨切换视角） -->
       <div class="card viz-card" id="viz-mount"></div>
 
-      <!-- 提分秘籍 + 60秒速练双栏 -->
-      <div class="grid-2">
-        <div class="card stack-md" style="gap:10px">
+      <!-- 提分秘籍 + 精确入口签名 -->
+      <div class="card stack-md" style="gap:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
           <h3 style="margin:0;font-size:16px">🏆 ${meta.shortName} 轨怎么拿合理高分？</h3>
-          <ul class="lang-bullets" style="margin-top:4px">${tipsHtml}</ul>
-          <div class="card-subtle" style="margin-top:auto">
-            <div style="font-size:11.5px;color:var(--text-muted);margin-bottom:4px">LeetGPU 精确入口签名（${meta.shortName}）</div>
-            <code style="font-family:var(--font-mono);font-size:12px;color:var(--cyan);word-break:break-all">${escapeHtml(tInfo.signature)}</code>
+          <code style="font-family:var(--font-mono);font-size:12px;color:var(--cyan);background:var(--bg-code);padding:4px 9px;border-radius:6px;border:1px solid var(--border-subtle);word-break:break-all">${escapeHtml(tInfo.signature)}</code>
+        </div>
+        <ul class="lang-bullets" style="margin-top:0">${tipsHtml}</ul>
+      </div>
+
+      <!-- 全宽实战练习面板（完整上下文填空 ⇄ 完整手写代码编辑器） -->
+      <div class="card drill-card" id="practice-card">
+        <div class="drill-header-row">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <h3 style="margin:0;font-size:16.5px">⚡ ${meta.shortName} 实战练习面板</h3>
+            ${isDrillPassed ? '<span class="badge badge-easy">✓ 练习已通过</span>' : '<span class="badge badge-pts">完整上下文 · 零剧透</span>'}
+          </div>
+          <div class="drill-header-controls">
+            <div class="drill-mode-switch" role="tablist" aria-label="练习模式切换">
+              <button class="drill-mode-btn ${!isEditorMode ? 'active' : ''}" data-drill-mode="fill" role="tab" aria-selected="${!isEditorMode}">完整上下文填空</button>
+              <button class="drill-mode-btn ${isEditorMode ? 'active' : ''}" data-drill-mode="editor" role="tab" aria-selected="${isEditorMode}">完整手写面板</button>
+            </div>
+            <button id="toggle-closed-book-btn" class="mini-btn ${state.closedBook ? 'primary-mini' : ''}" style="flex:0 0 auto" title="隐藏上方参考代码，闭卷练习">
+              ${state.closedBook ? '👀 退出闭卷' : '🙈 闭卷模式'}
+            </button>
           </div>
         </div>
 
-        <div class="card drill-card">
-          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
-            <h3 style="margin:0;font-size:16px">⚡ ${meta.shortName} 60 秒填空速练</h3>
-            ${isDrillPassed ? '<span class="badge badge-easy">✓ 速练已通过</span>' : '<span class="badge badge-pts">动手防忘</span>'}
-          </div>
-          <p class="drill-prompt">${tInfo.drill.prompt}</p>
-          <div class="drill-code-box">${drillHtml}</div>
-          <div class="drill-actions">
-            <button id="drill-check-btn" class="btn btn-primary" style="padding:7px 14px;font-size:13px">验证答案</button>
-            <button id="drill-hint-btn" class="btn" style="padding:7px 12px;font-size:13px">看提示</button>
-            <button id="drill-fill-btn" class="text-btn" style="margin-left:auto">显示标准答案</button>
-          </div>
-          <div id="drill-feedback" class="drill-feedback"></div>
-        </div>
+        ${!isEditorMode
+          ? `
+            <p class="drill-prompt">${tInfo.drill.prompt}（输入框默认不给代码剧透，忘记再点下方「看提示」）</p>
+            <div class="drill-context-pane" aria-label="完整上下文填空代码">${drillContextHtml}</div>
+            <div class="drill-actions">
+              <button id="drill-check-btn" class="btn btn-primary" style="padding:7px 14px;font-size:13px">验证答案 (Enter)</button>
+              <button id="drill-hint-btn" class="btn" style="padding:7px 12px;font-size:13px">💡 看提示</button>
+              <button id="drill-clear-btn" class="btn" style="padding:7px 12px;font-size:13px">清空重写</button>
+              <button id="drill-fill-btn" class="text-btn" style="margin-left:auto">填入标准答案</button>
+            </div>
+          `
+          : `
+            <p class="drill-prompt">在完整代码编辑区直接手写本题 ${meta.shortName} 实现（支持 <span class="kbd">Tab</span> 缩进 4 空格、<span class="kbd">Cmd/Ctrl+Enter</span> 自检，草稿自动保存在本地）：</p>
+            <div class="code-editor-wrap">
+              <div class="code-editor-meta">
+                <span>${track === 'cuda' ? 'solution.cu (CUDA C++)' : 'solution.triton.py (Triton)'}</span>
+                <span id="editor-line-count"></span>
+              </div>
+              <textarea id="full-code-editor" class="code-editor-area" rows="18" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off">${escapeHtml(editorDraft)}</textarea>
+            </div>
+            <div class="drill-actions">
+              <button id="editor-check-btn" class="btn btn-primary" style="padding:7px 14px;font-size:13px">✅ 本地结构自检</button>
+              <button id="editor-copy-btn" class="btn btn-cyan" style="padding:7px 12px;font-size:13px">📋 复制去 LeetGPU 提交</button>
+              <button id="editor-hint-btn" class="btn" style="padding:7px 12px;font-size:13px">💡 看关键提示</button>
+              <button id="editor-reset-btn" class="text-btn" style="margin-left:auto">重置为空白骨架</button>
+            </div>
+          `}
+        <div id="drill-feedback" class="drill-feedback"></div>
       </div>
 
       <!-- 底部上下题导航 -->
@@ -704,13 +811,32 @@ function renderStudioView() {
     });
   });
 
-  container.querySelector('#copy-code-btn').addEventListener('click', async () => {
+  container.querySelector('#copy-code-btn')?.addEventListener('click', async () => {
     try {
       await navigator.clipboard.writeText(codeObj.source);
       showToast(`已复制 #${p.id} ${p.title} (${lang.toUpperCase()}) 代码！`);
     } catch {
       showToast('复制失败，请手动选中代码复制');
     }
+  });
+
+  const toggleClosedBook = () => {
+    state.closedBook = !state.closedBook;
+    saveState();
+    renderStudioView();
+    showToast(state.closedBook ? '🙈 已开启闭卷模式（上方参考代码已隐藏）' : '👀 已恢复显示上方参考代码');
+  };
+  container.querySelector('#hide-ref-code-btn')?.addEventListener('click', toggleClosedBook);
+  container.querySelector('#reveal-ref-code-btn')?.addEventListener('click', toggleClosedBook);
+  container.querySelector('#toggle-closed-book-btn')?.addEventListener('click', toggleClosedBook);
+
+  // 切换练习模式（完整上下文填空 ⇄ 完整手写面板）
+  container.querySelectorAll('[data-drill-mode]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      state.drillMode = btn.dataset.drillMode;
+      saveState();
+      renderStudioView();
+    });
   });
 
   const selectLine = (ln) => {
@@ -731,58 +857,146 @@ function renderStudioView() {
     el.addEventListener('click', () => selectLine(Number(el.dataset.annLine)));
   });
 
-  // 填空速练逻辑
+  // 练习验证与编辑器逻辑
   const fbEl = container.querySelector('#drill-feedback');
-  const checkDrill = () => {
-    const inputs = [...container.querySelectorAll('.drill-input')];
-    let allCorrect = true;
-    inputs.forEach((inp) => {
-      const b = tInfo.drill.blanks.find((item) => item.id === inp.dataset.blankId);
-      const val = inp.value.trim().replace(/\s+/g, ' ');
-      const ok = b.answers.some((ans) => ans.replace(/\s+/g, ' ').toLowerCase() === val.toLowerCase());
-      inp.style.borderColor = ok ? 'var(--emerald)' : 'var(--rose)';
-      if (!ok) allCorrect = false;
-    });
-
-    fbEl.classList.add('show');
-    if (allCorrect) {
-      fbEl.className = 'drill-feedback show pass';
-      fbEl.innerHTML = `✅ 全部答对！你已经掌握本题 ${meta.shortName} 核心写法，可以直接去 LeetGPU 提交拿分！`;
-      if (!currentDrills().includes(p.id)) {
-        currentDrills().push(p.id);
-      }
-      if (!currentSolved().includes(p.id)) {
-        currentSolved().push(p.id);
-        showToast(`🎉 ${meta.shortName} 速练通关！解锁 #${p.id} +${p.points} 分`);
-      }
-      saveState();
-      renderStats();
-      renderSidebar();
-    } else {
-      fbEl.className = 'drill-feedback show fail';
-      fbEl.innerHTML = '❌ 还有空没填对（红框处），可以点「看提示」或对照上方代码再试一次！';
+  const markPracticePassed = () => {
+    if (!currentDrills().includes(p.id)) {
+      currentDrills().push(p.id);
     }
+    if (!currentSolved().includes(p.id)) {
+      currentSolved().push(p.id);
+      showToast(`🎉 ${meta.shortName} 练习通关！解锁 #${p.id} +${p.points} 分`);
+    }
+    saveState();
+    renderStats();
+    renderSidebar();
   };
 
-  container.querySelector('#drill-check-btn').addEventListener('click', checkDrill);
-  container.querySelectorAll('.drill-input').forEach((inp) => {
-    inp.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') checkDrill();
-    });
-  });
-  container.querySelector('#drill-hint-btn').addEventListener('click', () => {
-    fbEl.className = 'drill-feedback show hint';
-    fbEl.textContent = `💡 提示：${tInfo.drill.hint}`;
-  });
-  container.querySelector('#drill-fill-btn').addEventListener('click', () => {
+  if (!isEditorMode) {
+    const checkDrill = () => {
+      const inputs = [...container.querySelectorAll('.drill-input')];
+      let allCorrect = true;
+      inputs.forEach((inp) => {
+        const b = tInfo.drill.blanks.find((item) => item.id === inp.dataset.blankId);
+        const val = inp.value.trim().replace(/\s+/g, ' ');
+        const ok = b.answers.some((ans) => ans.replace(/\s+/g, ' ').toLowerCase() === val.toLowerCase());
+        inp.style.borderColor = ok ? 'var(--emerald)' : 'var(--rose)';
+        if (!ok) allCorrect = false;
+      });
+
+      fbEl.classList.add('show');
+      if (allCorrect) {
+        fbEl.className = 'drill-feedback show pass';
+        fbEl.innerHTML = `✅ 全部答对！你已经掌握本题 ${meta.shortName} 核心写法，可以直接去 LeetGPU 提交拿分！`;
+        markPracticePassed();
+      } else {
+        fbEl.className = 'drill-feedback show fail';
+        fbEl.innerHTML = '❌ 还有空没填对（红框处），可以点「💡 看提示」或切回上方参考代码核对！';
+      }
+    };
+
+    container.querySelector('#drill-check-btn')?.addEventListener('click', checkDrill);
     container.querySelectorAll('.drill-input').forEach((inp) => {
-      const b = tInfo.drill.blanks.find((item) => item.id === inp.dataset.blankId);
-      inp.value = b.answers[0];
-      inp.style.borderColor = 'var(--cyan)';
+      inp.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') checkDrill();
+      });
     });
-    fbEl.className = 'drill-feedback show hint';
-    fbEl.textContent = '已填入标准答案，建议默念一遍后点击「验证答案」。';
-  });
+    container.querySelector('#drill-hint-btn')?.addEventListener('click', () => {
+      fbEl.className = 'drill-feedback show hint';
+      fbEl.textContent = `💡 提示：${tInfo.drill.hint}`;
+    });
+    container.querySelector('#drill-clear-btn')?.addEventListener('click', () => {
+      container.querySelectorAll('.drill-input').forEach((inp) => {
+        inp.value = '';
+        inp.style.borderColor = '';
+      });
+      fbEl.className = 'drill-feedback';
+    });
+    container.querySelector('#drill-fill-btn')?.addEventListener('click', () => {
+      container.querySelectorAll('.drill-input').forEach((inp) => {
+        const b = tInfo.drill.blanks.find((item) => item.id === inp.dataset.blankId);
+        inp.value = b.answers[0];
+        inp.style.borderColor = 'var(--cyan)';
+      });
+      fbEl.className = 'drill-feedback show hint';
+      fbEl.textContent = '已填入标准答案，建议默念一遍后点击「验证答案」。';
+    });
+  } else {
+    const editorEl = container.querySelector('#full-code-editor');
+    const lineCountEl = container.querySelector('#editor-line-count');
+    const syncLineCount = () => {
+      if (!editorEl || !lineCountEl) return;
+      const count = editorEl.value.split('\n').length;
+      lineCountEl.textContent = `${count} 行 · ${editorEl.value.length} 字符`;
+    };
+    syncLineCount();
+
+    const runEditorCheck = () => {
+      const code = editorEl.value;
+      const checks = tInfo.drill.checks || [];
+      const results = checks.map((ck) => ({
+        label: ck.label,
+        ok: new RegExp(ck.regex, 'm').test(code)
+      }));
+      const allOk = results.length > 0 && results.every((r) => r.ok);
+      const listHtml = results.map((r) => `<div class="check-row ${r.ok ? 'ok' : 'miss'}">${r.ok ? '✅' : '❌'} ${r.label}</div>`).join('');
+
+      fbEl.classList.add('show');
+      if (allOk) {
+        fbEl.className = 'drill-feedback show pass';
+        fbEl.innerHTML = `<div style="font-weight:700;margin-bottom:6px">✅ 所有关键结构自检通过！现在可以点「复制去 LeetGPU 提交」实机跑分：</div>${listHtml}`;
+        markPracticePassed();
+      } else {
+        fbEl.className = 'drill-feedback show fail';
+        fbEl.innerHTML = `<div style="font-weight:700;margin-bottom:6px">还有部分关键结构未检测到（请检查标 ❌ 项）：</div>${listHtml}`;
+      }
+    };
+
+    editorEl?.addEventListener('input', () => {
+      state.codeDrafts[draftKey] = editorEl.value;
+      saveState();
+      syncLineCount();
+    });
+
+    editorEl?.addEventListener('keydown', (e) => {
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        const start = editorEl.selectionStart;
+        const end = editorEl.selectionEnd;
+        editorEl.value = editorEl.value.slice(0, start) + '    ' + editorEl.value.slice(end);
+        editorEl.selectionStart = editorEl.selectionEnd = start + 4;
+        state.codeDrafts[draftKey] = editorEl.value;
+        saveState();
+        syncLineCount();
+      } else if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+        e.preventDefault();
+        runEditorCheck();
+      }
+    });
+
+    container.querySelector('#editor-check-btn')?.addEventListener('click', runEditorCheck);
+    container.querySelector('#editor-copy-btn')?.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(editorEl.value);
+        showToast('已复制你手写的代码，可以直接粘贴到 LeetGPU！');
+      } catch {
+        showToast('复制失败，请手动全选复制');
+      }
+    });
+    container.querySelector('#editor-hint-btn')?.addEventListener('click', () => {
+      fbEl.className = 'drill-feedback show hint';
+      fbEl.textContent = `💡 关键提示：${tInfo.drill.hint}`;
+    });
+    container.querySelector('#editor-reset-btn')?.addEventListener('click', () => {
+      const skel = buildStarterSkeleton(p, track);
+      editorEl.value = skel;
+      state.codeDrafts[draftKey] = skel;
+      saveState();
+      syncLineCount();
+      fbEl.className = 'drill-feedback';
+      showToast('已重置为空白起步骨架');
+    });
+  }
 
   if (prevP) {
     container.querySelector('#prev-problem-btn').addEventListener('click', () => openProblem(prevP.id));
